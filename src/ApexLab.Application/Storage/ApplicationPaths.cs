@@ -1,0 +1,197 @@
+using ApexLab.Application.Identity;
+
+namespace ApexLab.Application.Storage;
+
+public sealed record ApplicationPaths
+{
+    private ApplicationPaths(string rootDirectory)
+    {
+        RootDirectory = rootDirectory;
+        DatabaseFile = Path.Combine(rootDirectory, "apexlab.db");
+        RawCapturesDirectory = Path.Combine(rootDirectory, "captures");
+        DerivedCacheDirectory = Path.Combine(rootDirectory, "cache");
+        LogsDirectory = Path.Combine(rootDirectory, "logs");
+        BackupsDirectory = Path.Combine(rootDirectory, "backups");
+        ImportStagingDirectory = Path.Combine(rootDirectory, "import-staging");
+    }
+
+    public string RootDirectory { get; }
+
+    public string DatabaseFile { get; }
+
+    public string RawCapturesDirectory { get; }
+
+    public string DerivedCacheDirectory { get; }
+
+    public string LogsDirectory { get; }
+
+    public string BackupsDirectory { get; }
+
+    public string ImportStagingDirectory { get; }
+
+    public static ApplicationPaths FromLocalApplicationData(string localApplicationDataDirectory)
+    {
+        var normalizedLocalApplicationData = NormalizeDataDirectory(
+            localApplicationDataDirectory,
+            nameof(localApplicationDataDirectory));
+        var rootDirectory = Path.GetFullPath(
+            Path.Combine(normalizedLocalApplicationData, ApplicationIdentity.ProductName));
+
+        return new ApplicationPaths(rootDirectory);
+    }
+
+    public static ApplicationPaths FromRoot(string rootDirectory)
+    {
+        return new ApplicationPaths(NormalizeDataDirectory(rootDirectory, nameof(rootDirectory)));
+    }
+
+    private static string NormalizeDataDirectory(string path, string parameterName)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            throw new ArgumentException("A data directory is required.", parameterName);
+        }
+
+        if (UsesNonLocalOrDeviceNamespace(path))
+        {
+            throw new ArgumentException(
+                "The data directory must use a local filesystem path without a device namespace.",
+                parameterName);
+        }
+
+        if (!Path.IsPathFullyQualified(path))
+        {
+            throw new ArgumentException("The data directory must be an absolute path.", parameterName);
+        }
+
+        if (ContainsUnsafePathSegment(path))
+        {
+            throw new ArgumentException(
+                "The data directory contains an unsafe or non-canonical path component.",
+                parameterName);
+        }
+
+        string normalizedPath;
+        try
+        {
+            normalizedPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new ArgumentException("The data directory is not a valid path.", parameterName, exception);
+        }
+
+        var pathRoot = Path.GetPathRoot(normalizedPath);
+        if (!HasCanonicalLocalRoot(pathRoot)
+            || string.Equals(
+                normalizedPath,
+                Path.TrimEndingDirectorySeparator(pathRoot!),
+                OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal))
+        {
+            throw new ArgumentException("A filesystem root cannot be used as the data directory.", parameterName);
+        }
+
+        return normalizedPath;
+    }
+
+    private static bool UsesNonLocalOrDeviceNamespace(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        var windowsPath = path.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+
+        // ApexLab intentionally keeps its private evidence store on a local drive.
+        return windowsPath.StartsWith(@"\\", StringComparison.Ordinal)
+            || windowsPath.StartsWith(@"\??\", StringComparison.Ordinal);
+    }
+
+    private static bool HasCanonicalLocalRoot(string? pathRoot)
+    {
+        if (pathRoot is null)
+        {
+            return false;
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            return Path.IsPathFullyQualified(pathRoot);
+        }
+
+        return pathRoot.Length == 3
+            && char.IsAsciiLetter(pathRoot[0])
+            && pathRoot[1] == Path.VolumeSeparatorChar
+            && pathRoot[2] == Path.DirectorySeparatorChar;
+    }
+
+    private static bool ContainsUnsafePathSegment(string path)
+    {
+        var segments = path
+            .Split(
+                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                StringSplitOptions.RemoveEmptyEntries);
+
+        for (var index = 0; index < segments.Length; index++)
+        {
+            var segment = segments[index];
+            if (segment is "." or "..")
+            {
+                return true;
+            }
+
+            if (OperatingSystem.IsWindows()
+                && !(index == 0 && IsWindowsDriveDesignator(segment))
+                && IsUnsafeWindowsSegment(segment))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsWindowsDriveDesignator(string segment)
+    {
+        return segment.Length == 2
+            && char.IsAsciiLetter(segment[0])
+            && segment[1] == Path.VolumeSeparatorChar;
+    }
+
+    private static bool IsUnsafeWindowsSegment(string segment)
+    {
+        if (segment[^1] is ' ' or '.'
+            || segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            return true;
+        }
+
+        var firstPeriodIndex = segment.IndexOf('.');
+        var baseName = firstPeriodIndex >= 0
+            ? segment[..firstPeriodIndex]
+            : segment;
+
+        if (baseName.EndsWith(' ')
+            || baseName.Equals("CON", StringComparison.OrdinalIgnoreCase)
+            || baseName.Equals("PRN", StringComparison.OrdinalIgnoreCase)
+            || baseName.Equals("AUX", StringComparison.OrdinalIgnoreCase)
+            || baseName.Equals("NUL", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return baseName.Length == 4
+            && IsWindowsReservedDeviceDigit(baseName[3])
+            && (baseName.StartsWith("COM", StringComparison.OrdinalIgnoreCase)
+                || baseName.StartsWith("LPT", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsWindowsReservedDeviceDigit(char value)
+    {
+        return value is >= '1' and <= '9' or '\u00B9' or '\u00B2' or '\u00B3';
+    }
+}
