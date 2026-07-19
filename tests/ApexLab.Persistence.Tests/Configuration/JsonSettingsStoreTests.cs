@@ -81,12 +81,15 @@ public sealed class JsonSettingsStoreTests
         string? observedTargetPath = null;
         using var interruptedStore = new JsonSettingsStore(
             defaults,
-            (tempPath, targetPath, _) =>
+            new JsonSettingsStoreHooks
             {
-                observedTempPath = tempPath;
-                observedTargetPath = targetPath;
-                cancellation.Cancel();
-                return ValueTask.CompletedTask;
+                BeforeCommitAsync = (tempPath, targetPath, _) =>
+                {
+                    observedTempPath = tempPath;
+                    observedTargetPath = targetPath;
+                    cancellation.Cancel();
+                    return ValueTask.CompletedTask;
+                },
             });
 
         await Assert.ThrowsExactlyAsync<OperationCanceledException>(
@@ -110,7 +113,10 @@ public sealed class JsonSettingsStoreTests
         var previousBytes = await File.ReadAllBytesAsync(initialStore.SettingsFilePath);
         using var failingStore = new JsonSettingsStore(
             defaults,
-            (_, _, _) => throw new IOException("Simulated storage failure."));
+            new JsonSettingsStoreHooks
+            {
+                BeforeCommitAsync = (_, _, _) => throw new IOException("Simulated storage failure."),
+            });
 
         var exception = await Assert.ThrowsExactlyAsync<IOException>(
             () => failingStore.SaveAsync(defaults with { UdpPort = 30_002 }, CancellationToken.None));
@@ -187,13 +193,16 @@ public sealed class JsonSettingsStoreTests
         var callbackCount = 0;
         using var store = new JsonSettingsStore(
             defaults,
-            async (_, _, _) =>
+            new JsonSettingsStoreHooks
             {
-                if (Interlocked.Increment(ref callbackCount) == 1)
+                BeforeCommitAsync = async (_, _, _) =>
                 {
-                    firstEntered.SetResult();
-                    await releaseFirst.Task;
-                }
+                    if (Interlocked.Increment(ref callbackCount) == 1)
+                    {
+                        firstEntered.SetResult();
+                        await releaseFirst.Task;
+                    }
+                },
             });
 
         var firstSave = store.SaveAsync(defaults with { UdpPort = 30_003 }, CancellationToken.None);
@@ -260,6 +269,166 @@ public sealed class JsonSettingsStoreTests
         directory.MarkDeleted();
     }
 
+    [TestMethod]
+    public async Task Dispose_DuringActiveSave_WaitsForCompletionAndRejectsLaterOperations()
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        var saveEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disposalStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new JsonSettingsStore(
+            defaults,
+            new JsonSettingsStoreHooks
+            {
+                BeforeCommitAsync = async (_, _, _) =>
+                {
+                    saveEntered.SetResult();
+                    await releaseSave.Task;
+                },
+                AfterAdmissionClosed = disposalStarted.SetResult,
+            });
+
+        var saveTask = store.SaveAsync(defaults with { UdpPort = 30_005 }, CancellationToken.None);
+        await saveEntered.Task;
+        var disposeTask = Task.Run(store.Dispose);
+        await disposalStarted.Task;
+
+        Assert.IsFalse(disposeTask.IsCompleted);
+        await Assert.ThrowsExactlyAsync<ObjectDisposedException>(
+            () => store.LoadAsync(CancellationToken.None));
+        releaseSave.SetResult();
+        await saveTask;
+        await disposeTask;
+
+        AssertNoTemporaryFiles(directory.Path);
+        store.Dispose();
+    }
+
+    [TestMethod]
+    public async Task Dispose_DuringActiveLoad_WaitsForCompletionAndReleasesFileHandle()
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        using (var initialStore = new JsonSettingsStore(defaults))
+        {
+            await initialStore.SaveAsync(defaults, CancellationToken.None);
+        }
+
+        var loadEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseLoad = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disposalStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new JsonSettingsStore(
+            defaults,
+            new JsonSettingsStoreHooks
+            {
+                AfterLoadOpenedAsync = async (_, _) =>
+                {
+                    loadEntered.SetResult();
+                    await releaseLoad.Task;
+                },
+                AfterAdmissionClosed = disposalStarted.SetResult,
+            });
+
+        var loadTask = store.LoadAsync(CancellationToken.None);
+        await loadEntered.Task;
+        var disposeTask = Task.Run(store.Dispose);
+        await disposalStarted.Task;
+
+        Assert.IsFalse(disposeTask.IsCompleted);
+        await Assert.ThrowsExactlyAsync<ObjectDisposedException>(
+            () => store.SaveAsync(defaults, CancellationToken.None));
+        releaseLoad.SetResult();
+        Assert.AreEqual(defaults, await loadTask);
+        await disposeTask;
+
+        var movedPath = $"{directory.Path}-disposed-load";
+        Directory.Move(directory.Path, movedPath);
+        Directory.Delete(movedPath, recursive: true);
+        directory.MarkDeleted();
+    }
+
+    [TestMethod]
+    public async Task Dispose_WithQueuedSave_WaitsForEveryAdmittedOperation()
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSecond = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disposalStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackCount = 0;
+        var store = new JsonSettingsStore(
+            defaults,
+            new JsonSettingsStoreHooks
+            {
+                BeforeCommitAsync = async (_, _, _) =>
+                {
+                    if (Interlocked.Increment(ref callbackCount) == 1)
+                    {
+                        firstEntered.SetResult();
+                        await releaseFirst.Task;
+                    }
+                    else
+                    {
+                        secondEntered.SetResult();
+                        await releaseSecond.Task;
+                    }
+                },
+                AfterAdmissionClosed = disposalStarted.SetResult,
+            });
+
+        var firstSave = store.SaveAsync(defaults with { UdpPort = 30_006 }, CancellationToken.None);
+        await firstEntered.Task;
+        var finalOptions = defaults with { UdpPort = 30_007 };
+        var queuedSave = store.SaveAsync(finalOptions, CancellationToken.None);
+        var disposeTask = Task.Run(store.Dispose);
+        await disposalStarted.Task;
+
+        Assert.IsFalse(disposeTask.IsCompleted);
+        releaseFirst.SetResult();
+        await secondEntered.Task;
+        Assert.IsFalse(disposeTask.IsCompleted);
+        releaseSecond.SetResult();
+        await Task.WhenAll(firstSave, queuedSave);
+        await disposeTask;
+
+        using var verificationStore = new JsonSettingsStore(defaults);
+        Assert.AreEqual(finalOptions, await verificationStore.LoadAsync(CancellationToken.None));
+        AssertNoTemporaryFiles(directory.Path);
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_OnWindowsAtomicallyReplacesFileVisibleThroughDeleteSharing()
+    {
+        Assert.IsTrue(OperatingSystem.IsWindows(), "ApexLab desktop persistence targets Windows.");
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        var oldOptions = defaults with { UdpPort = 30_008 };
+        var newOptions = defaults with { UdpPort = 30_009 };
+        using var store = new JsonSettingsStore(defaults);
+        await store.SaveAsync(newOptions, CancellationToken.None);
+        var expectedNewBytes = await File.ReadAllBytesAsync(store.SettingsFilePath);
+        await store.SaveAsync(oldOptions, CancellationToken.None);
+        var expectedOldBytes = await File.ReadAllBytesAsync(store.SettingsFilePath);
+        await using var retainedOldHandle = new FileStream(
+            store.SettingsFilePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 4096,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+        await store.SaveAsync(newOptions, CancellationToken.None);
+
+        var bytesThroughRetainedHandle = await ReadAllBytesAsync(retainedOldHandle);
+        var bytesThroughNewPath = await File.ReadAllBytesAsync(store.SettingsFilePath);
+        CollectionAssert.AreEqual(expectedOldBytes, bytesThroughRetainedHandle);
+        CollectionAssert.AreEqual(expectedNewBytes, bytesThroughNewPath);
+        Assert.AreEqual(newOptions, await store.LoadAsync(CancellationToken.None));
+    }
+
     private static ApexLabOptions CreateOptions(string dataRootPath)
     {
         return new ApexLabOptions(dataRootPath);
@@ -268,6 +437,14 @@ public sealed class JsonSettingsStoreTests
     private static void AssertNoTemporaryFiles(string directoryPath)
     {
         Assert.IsEmpty(Directory.GetFiles(directoryPath, ".settings.json.*.tmp"));
+    }
+
+    private static async Task<byte[]> ReadAllBytesAsync(Stream stream)
+    {
+        stream.Position = 0;
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer);
+        return buffer.ToArray();
     }
 
     private sealed class TemporaryDirectory : IDisposable

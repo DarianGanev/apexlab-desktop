@@ -12,28 +12,35 @@ public sealed class JsonSettingsStore : ISettingsStore
         WriteIndented = true,
     };
 
-    private readonly Func<string, string, CancellationToken, ValueTask> _beforeCommit;
     private readonly ApexLabOptions _defaults;
+    private readonly JsonSettingsStoreHooks _hooks;
+    private readonly object _lifetimeLock = new();
     private readonly SemaphoreSlim _operationGate = new(1, 1);
-    private int _disposed;
+    private readonly TaskCompletionSource _operationsDrained = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _disposalCompleted = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _admittedOperationCount;
+    private bool _admissionClosed;
+    private bool _disposalStarted;
 
     public JsonSettingsStore(ApexLabOptions defaults)
-        : this(defaults, static (_, _, _) => ValueTask.CompletedTask)
+        : this(defaults, JsonSettingsStoreHooks.None)
     {
     }
 
     internal JsonSettingsStore(
         ApexLabOptions defaults,
-        Func<string, string, CancellationToken, ValueTask> beforeCommit)
+        JsonSettingsStoreHooks hooks)
     {
         ArgumentNullException.ThrowIfNull(defaults);
-        ArgumentNullException.ThrowIfNull(beforeCommit);
+        ArgumentNullException.ThrowIfNull(hooks);
 
         ThrowIfInvalid(defaults, nameof(defaults));
         var paths = ApplicationPaths.FromRoot(defaults.DataRootPath);
 
         _defaults = defaults;
-        _beforeCommit = beforeCommit;
+        _hooks = hooks;
         SettingsFilePath = Path.Combine(paths.RootDirectory, SettingsFileName);
     }
 
@@ -41,10 +48,12 @@ public sealed class JsonSettingsStore : ISettingsStore
 
     public async Task<ApexLabOptions> LoadAsync(CancellationToken cancellationToken)
     {
-        ThrowIfDisposed();
-        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        AdmitOperation();
+        var gateEntered = false;
         try
         {
+            await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            gateEntered = true;
             cancellationToken.ThrowIfCancellationRequested();
             if (!File.Exists(SettingsFilePath))
             {
@@ -60,6 +69,9 @@ public sealed class JsonSettingsStore : ISettingsStore
                     FileShare.Read,
                     bufferSize: 4096,
                     FileOptions.Asynchronous | FileOptions.SequentialScan);
+                await _hooks.AfterLoadOpenedAsync(
+                    SettingsFilePath,
+                    cancellationToken).ConfigureAwait(false);
                 var options = await JsonSerializer.DeserializeAsync<ApexLabOptions>(
                     stream,
                     SerializerOptions,
@@ -88,21 +100,32 @@ public sealed class JsonSettingsStore : ISettingsStore
         }
         finally
         {
-            _operationGate.Release();
+            try
+            {
+                if (gateEntered)
+                {
+                    _operationGate.Release();
+                }
+            }
+            finally
+            {
+                CompleteOperation();
+            }
         }
     }
 
     public async Task SaveAsync(ApexLabOptions options, CancellationToken cancellationToken)
     {
-        ThrowIfDisposed();
-        ArgumentNullException.ThrowIfNull(options);
-        ThrowIfInvalid(options, nameof(options));
-        cancellationToken.ThrowIfCancellationRequested();
-
-        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        AdmitOperation();
+        var gateEntered = false;
         string? temporaryFilePath = null;
         try
         {
+            ArgumentNullException.ThrowIfNull(options);
+            ThrowIfInvalid(options, nameof(options));
+            cancellationToken.ThrowIfCancellationRequested();
+            await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            gateEntered = true;
             cancellationToken.ThrowIfCancellationRequested();
             var settingsDirectory = Path.GetDirectoryName(SettingsFilePath)!;
             Directory.CreateDirectory(settingsDirectory);
@@ -127,7 +150,10 @@ public sealed class JsonSettingsStore : ISettingsStore
                 stream.Flush(flushToDisk: true);
             }
 
-            await _beforeCommit(temporaryFilePath, SettingsFilePath, cancellationToken).ConfigureAwait(false);
+            await _hooks.BeforeCommitAsync(
+                temporaryFilePath,
+                SettingsFilePath,
+                cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
             if (File.Exists(SettingsFilePath))
@@ -143,21 +169,71 @@ public sealed class JsonSettingsStore : ISettingsStore
         }
         finally
         {
-            if (temporaryFilePath is not null && File.Exists(temporaryFilePath))
+            try
             {
-                File.Delete(temporaryFilePath);
+                if (temporaryFilePath is not null && File.Exists(temporaryFilePath))
+                {
+                    File.Delete(temporaryFilePath);
+                }
             }
-
-            _operationGate.Release();
+            finally
+            {
+                try
+                {
+                    if (gateEntered)
+                    {
+                        _operationGate.Release();
+                    }
+                }
+                finally
+                {
+                    CompleteOperation();
+                }
+            }
         }
     }
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        bool notifyAdmissionClosed;
+        lock (_lifetimeLock)
         {
-            _operationGate.Dispose();
+            notifyAdmissionClosed = !_admissionClosed;
+            _admissionClosed = true;
+            if (_admittedOperationCount == 0)
+            {
+                _operationsDrained.TrySetResult();
+            }
         }
+
+        if (notifyAdmissionClosed)
+        {
+            _hooks.AfterAdmissionClosed();
+        }
+
+        _operationsDrained.Task.GetAwaiter().GetResult();
+
+        bool ownsResourceDisposal;
+        lock (_lifetimeLock)
+        {
+            ownsResourceDisposal = !_disposalStarted;
+            _disposalStarted = true;
+        }
+
+        if (ownsResourceDisposal)
+        {
+            try
+            {
+                _operationGate.Dispose();
+                _disposalCompleted.TrySetResult();
+            }
+            catch (Exception exception)
+            {
+                _disposalCompleted.TrySetException(exception);
+            }
+        }
+
+        _disposalCompleted.Task.GetAwaiter().GetResult();
     }
 
     private static void ThrowIfInvalid(ApexLabOptions options, string parameterName)
@@ -182,10 +258,39 @@ public sealed class JsonSettingsStore : ISettingsStore
         File.Move(SettingsFilePath, diagnosticFilePath);
     }
 
-    private void ThrowIfDisposed()
+    private void AdmitOperation()
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        lock (_lifetimeLock)
+        {
+            ObjectDisposedException.ThrowIf(_admissionClosed, this);
+            _admittedOperationCount++;
+        }
+    }
+
+    private void CompleteOperation()
+    {
+        lock (_lifetimeLock)
+        {
+            _admittedOperationCount--;
+            if (_admissionClosed && _admittedOperationCount == 0)
+            {
+                _operationsDrained.TrySetResult();
+            }
+        }
     }
 
     private sealed class InvalidSettingsFileException : Exception;
+}
+
+internal sealed class JsonSettingsStoreHooks
+{
+    internal static JsonSettingsStoreHooks None { get; } = new();
+
+    internal Func<string, CancellationToken, ValueTask> AfterLoadOpenedAsync { get; init; } =
+        static (_, _) => ValueTask.CompletedTask;
+
+    internal Func<string, string, CancellationToken, ValueTask> BeforeCommitAsync { get; init; } =
+        static (_, _, _) => ValueTask.CompletedTask;
+
+    internal Action AfterAdmissionClosed { get; init; } = static () => { };
 }
