@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
-namespace ApexLab.App.Mvvm;
+namespace ApexLab.App.Presentation;
 
 public abstract class ObservableObject : INotifyPropertyChanged
 {

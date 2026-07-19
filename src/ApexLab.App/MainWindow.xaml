@@ -1,12 +1,360 @@
-﻿<Window x:Class="ApexLab.App.MainWindow"
+<Window x:Class="ApexLab.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:ApexLab.App"
+        xmlns:shell="clr-namespace:ApexLab.App.Shell"
         mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
+        Title="ApexLab — Telemetry Coaching Workbench"
+        Width="1360"
+        Height="860"
+        MinWidth="1100"
+        MinHeight="700"
+        WindowStartupLocation="CenterScreen"
+        Background="#0A0E14"
+        Foreground="#EEF2F6"
+        FontFamily="Segoe UI"
+        TextOptions.TextFormattingMode="Display"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        KeyboardNavigation.TabNavigation="Cycle">
+    <Window.DataContext>
+        <shell:ShellViewModel />
+    </Window.DataContext>
 
+    <Window.Resources>
+        <SolidColorBrush x:Key="PanelBrush" Color="#111822" />
+        <SolidColorBrush x:Key="RaisedPanelBrush" Color="#17212D" />
+        <SolidColorBrush x:Key="HairlineBrush" Color="#2A3949" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#39D98A" />
+        <SolidColorBrush x:Key="AccentMutedBrush" Color="#173B31" />
+        <SolidColorBrush x:Key="SecondaryTextBrush" Color="#9EACBB" />
+
+        <Style x:Key="StrongFocusVisual">
+            <Setter Property="Control.Template">
+                <Setter.Value>
+                    <ControlTemplate>
+                        <Border Margin="-4"
+                                BorderBrush="#80E8B5"
+                                BorderThickness="2"
+                                CornerRadius="7" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="NavigationButtonStyle" TargetType="Button">
+            <Setter Property="Height" Value="52" />
+            <Setter Property="Margin" Value="0,0,0,8" />
+            <Setter Property="Padding" Value="16,0" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Foreground" Value="#DCE5ED" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource StrongFocusVisual}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Chrome"
+                                Padding="{TemplateBinding Padding}"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8">
+                            <ContentPresenter VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="#1D2A37" />
+                                <Setter TargetName="Chrome" Property="BorderBrush" Value="#34485C" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="#173B31" />
+                                <Setter Property="Foreground" Value="#A6F2CE" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SecondaryButtonStyle"
+               TargetType="Button"
+               BasedOn="{StaticResource NavigationButtonStyle}">
+            <Setter Property="Height" Value="42" />
+            <Setter Property="Margin" Value="0,6,0,0" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Background" Value="#141E29" />
+            <Setter Property="BorderBrush" Value="#2A3949" />
+        </Style>
+
+        <Style x:Key="CardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource RaisedPanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource HairlineBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="Padding" Value="22" />
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="76" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="40" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+                Padding="28,0"
+                Background="#0D131B"
+                BorderBrush="{StaticResource HairlineBrush}"
+                BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock FontSize="22"
+                               FontWeight="Bold"
+                               Text="APEXLAB" />
+                    <TextBlock Margin="0,2,0,0"
+                               Foreground="{StaticResource SecondaryTextBrush}"
+                               FontSize="11"
+                               Text="TELEMETRY COACHING WORKBENCH" />
+                </StackPanel>
+                <Border Grid.Column="2"
+                        VerticalAlignment="Center"
+                        Padding="12,7"
+                        Background="{StaticResource AccentMutedBrush}"
+                        BorderBrush="#286F54"
+                        BorderThickness="1"
+                        CornerRadius="14"
+                        AutomationProperties.Name="Application status: Foundation build, offline">
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse Width="8"
+                                 Height="8"
+                                 Margin="0,0,8,0"
+                                 VerticalAlignment="Center"
+                                 Fill="{StaticResource AccentBrush}" />
+                        <TextBlock Foreground="#A6F2CE"
+                                   FontSize="11"
+                                   FontWeight="Bold"
+                                   Text="FOUNDATION • OFFLINE" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="260" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0"
+                    Padding="20,26"
+                    Background="{StaticResource PanelBrush}"
+                    BorderBrush="{StaticResource HairlineBrush}"
+                    BorderThickness="0,0,1,0">
+                <DockPanel LastChildFill="True">
+                    <StackPanel DockPanel.Dock="Top">
+                        <TextBlock Margin="8,0,0,14"
+                                   Foreground="{StaticResource SecondaryTextBrush}"
+                                   FontSize="11"
+                                   FontWeight="Bold"
+                                   Text="WORKFLOW" />
+                        <Button Tag="PrimaryNavigation"
+                                Content="_Drive"
+                                Command="{Binding SelectAreaCommand}"
+                                CommandParameter="{Binding PrimaryAreas[0]}"
+                                Style="{StaticResource NavigationButtonStyle}"
+                                AutomationProperties.Name="Drive" />
+                        <Button Tag="PrimaryNavigation"
+                                Content="_Review"
+                                Command="{Binding SelectAreaCommand}"
+                                CommandParameter="{Binding PrimaryAreas[1]}"
+                                Style="{StaticResource NavigationButtonStyle}"
+                                AutomationProperties.Name="Review" />
+                        <Button Tag="PrimaryNavigation"
+                                Content="_Coach"
+                                Command="{Binding SelectAreaCommand}"
+                                CommandParameter="{Binding PrimaryAreas[2]}"
+                                Style="{StaticResource NavigationButtonStyle}"
+                                AutomationProperties.Name="Coach" />
+                        <Button Tag="PrimaryNavigation"
+                                Content="Data &amp; _Settings"
+                                Command="{Binding SelectAreaCommand}"
+                                CommandParameter="{Binding PrimaryAreas[3]}"
+                                Style="{StaticResource NavigationButtonStyle}"
+                                AutomationProperties.Name="Data and Settings" />
+                    </StackPanel>
+
+                    <StackPanel DockPanel.Dock="Bottom">
+                        <TextBlock Margin="8,18,0,7"
+                                   Foreground="{StaticResource SecondaryTextBrush}"
+                                   FontSize="11"
+                                   FontWeight="Bold"
+                                   Text="ADVANCED ROUTES" />
+                        <Button Content="Corner Editor"
+                                Command="{Binding OpenCornerEditorCommand}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                AutomationProperties.Name="Open Corner Editor within Review" />
+                        <Button Content="Replay &amp; Diagnostics"
+                                Command="{Binding OpenReplayDiagnosticsCommand}"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                AutomationProperties.Name="Open Replay and Diagnostics within Data and Settings" />
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
+            <ScrollViewer Grid.Column="1"
+                          Padding="34,30"
+                          HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollBarVisibility="Auto"
+                          Focusable="False">
+                <Grid MaxWidth="1180" HorizontalAlignment="Stretch">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="0,0,0,26">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Foreground="{StaticResource AccentBrush}"
+                                       FontSize="12"
+                                       FontWeight="Bold"
+                                       Text="{Binding CurrentRoute, StringFormat=WORKSPACE  /  {0}}" />
+                            <TextBlock Margin="0,8,0,0"
+                                       FontSize="34"
+                                       FontWeight="SemiBold"
+                                       Text="{Binding SelectedArea.Title}" />
+                            <TextBlock Margin="0,8,0,0"
+                                       MaxWidth="720"
+                                       Foreground="{StaticResource SecondaryTextBrush}"
+                                       FontSize="15"
+                                       Text="{Binding SelectedArea.Purpose}"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+                        <Border Grid.Column="1"
+                                Margin="24,0,0,0"
+                                Padding="14,9"
+                                VerticalAlignment="Top"
+                                BorderBrush="{StaticResource HairlineBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8">
+                            <TextBlock Foreground="{StaticResource SecondaryTextBrush}"
+                                       FontSize="12"
+                                       Text="Milestone v0.1" />
+                        </Border>
+                    </Grid>
+
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2*" />
+                            <ColumnDefinition Width="18" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Style="{StaticResource CardStyle}">
+                            <StackPanel>
+                                <TextBlock Foreground="{StaticResource AccentBrush}"
+                                           FontSize="11"
+                                           FontWeight="Bold"
+                                           Text="FOUNDATION STATUS" />
+                                <TextBlock Margin="0,13,0,0"
+                                           FontSize="22"
+                                           FontWeight="SemiBold"
+                                           Text="Workflow shell ready" />
+                                <TextBlock Margin="0,12,0,0"
+                                           Foreground="{StaticResource SecondaryTextBrush}"
+                                           FontSize="14"
+                                           LineHeight="22"
+                                           Text="No telemetry is being captured in this foundation build. The navigation and local composition are ready for the verified capture pipeline planned in the next milestone."
+                                           TextWrapping="Wrap" />
+                                <Border Margin="0,24,0,0"
+                                        Padding="16"
+                                        Background="#101720"
+                                        BorderBrush="#273645"
+                                        BorderThickness="1"
+                                        CornerRadius="8">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0"
+                                                   Margin="0,0,14,0"
+                                                   Foreground="#F4C46B"
+                                                   FontSize="13"
+                                                   FontWeight="Bold"
+                                                   Text="NOT CONNECTED" />
+                                        <TextBlock Grid.Column="1"
+                                                   Foreground="{StaticResource SecondaryTextBrush}"
+                                                   FontSize="13"
+                                                   Text="UDP readiness arrives with the capture milestone."
+                                                   TextWrapping="Wrap" />
+                                    </Grid>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Column="2" Style="{StaticResource CardStyle}">
+                            <StackPanel>
+                                <TextBlock Foreground="{StaticResource SecondaryTextBrush}"
+                                           FontSize="11"
+                                           FontWeight="Bold"
+                                           Text="PRODUCT LOOP" />
+                                <TextBlock Margin="0,14,0,0" FontSize="14" FontWeight="SemiBold" Text="01  Connect" />
+                                <TextBlock Margin="0,12,0,0" FontSize="14" FontWeight="SemiBold" Text="02  Build baseline" />
+                                <TextBlock Margin="0,12,0,0" FontSize="14" FontWeight="SemiBold" Text="03  Review one issue" />
+                                <TextBlock Margin="0,12,0,0" FontSize="14" FontWeight="SemiBold" Text="04  Run experiment" />
+                                <TextBlock Margin="0,12,0,0" FontSize="14" FontWeight="SemiBold" Text="05  Measure result" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <TextBlock Grid.Row="2"
+                               Margin="2,24,0,0"
+                               Foreground="#748495"
+                               FontSize="12"
+                               Text="Local-first • Private by design • Deterministic evidence before recommendations" />
+                </Grid>
+            </ScrollViewer>
+        </Grid>
+
+        <Border Grid.Row="2"
+                Padding="26,0"
+                Background="#0D131B"
+                BorderBrush="{StaticResource HairlineBrush}"
+                BorderThickness="0,1,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{StaticResource SecondaryTextBrush}"
+                           FontSize="11"
+                           Text="STATUS  •  UI READY  •  CAPTURE UNAVAILABLE" />
+                <TextBlock Grid.Column="1"
+                           VerticalAlignment="Center"
+                           Foreground="{StaticResource SecondaryTextBrush}"
+                           FontSize="11"
+                           Text="Alt+D / Alt+R / Alt+C / Alt+S" />
+            </Grid>
+        </Border>
     </Grid>
 </Window>
