@@ -3,7 +3,6 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:shell="clr-namespace:ApexLab.App.Shell"
         mc:Ignorable="d"
         Title="ApexLab — Telemetry Coaching Workbench"
         Width="1360"
@@ -18,10 +17,6 @@
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
         KeyboardNavigation.TabNavigation="Cycle">
-    <Window.DataContext>
-        <shell:ShellViewModel />
-    </Window.DataContext>
-
     <Window.Resources>
         <SolidColorBrush x:Key="PanelBrush" Color="#111822" />
         <SolidColorBrush x:Key="RaisedPanelBrush" Color="#17212D" />
