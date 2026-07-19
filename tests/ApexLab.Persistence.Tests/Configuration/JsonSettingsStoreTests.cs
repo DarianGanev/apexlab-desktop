@@ -184,6 +184,21 @@ public sealed class JsonSettingsStoreTests
     }
 
     [TestMethod]
+    public async Task LoadAsync_WhenSettingsPathIsADirectory_PropagatesAccessFailureWithoutFallback()
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        using var store = new JsonSettingsStore(defaults);
+        Directory.CreateDirectory(store.SettingsFilePath);
+
+        await Assert.ThrowsExactlyAsync<UnauthorizedAccessException>(
+            () => store.LoadAsync(CancellationToken.None));
+
+        Assert.IsTrue(Directory.Exists(store.SettingsFilePath));
+        Assert.IsEmpty(Directory.GetFiles(directory.Path, "settings.invalid-*.json"));
+    }
+
+    [TestMethod]
     public async Task SaveAsync_ConcurrentCallsAreSerializedAndLeaveNoTemporaryFiles()
     {
         using var directory = new TemporaryDirectory();
@@ -396,6 +411,51 @@ public sealed class JsonSettingsStoreTests
 
         using var verificationStore = new JsonSettingsStore(defaults);
         Assert.AreEqual(finalOptions, await verificationStore.LoadAsync(CancellationToken.None));
+        AssertNoTemporaryFiles(directory.Path);
+    }
+
+    [TestMethod]
+    public async Task Dispose_ConcurrentCallersBothWaitAndCompleteSafely()
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        var saveEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bothDisposersWaiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disposalWaitCount = 0;
+        var store = new JsonSettingsStore(
+            defaults,
+            new JsonSettingsStoreHooks
+            {
+                BeforeCommitAsync = async (_, _, _) =>
+                {
+                    saveEntered.SetResult();
+                    await releaseSave.Task;
+                },
+                BeforeDisposalDrainWait = () =>
+                {
+                    if (Interlocked.Increment(ref disposalWaitCount) == 2)
+                    {
+                        bothDisposersWaiting.SetResult();
+                    }
+                },
+            });
+
+        var saveTask = store.SaveAsync(defaults with { UdpPort = 30_010 }, CancellationToken.None);
+        await saveEntered.Task;
+        var firstDispose = Task.Run(store.Dispose);
+        var secondDispose = Task.Run(store.Dispose);
+        await bothDisposersWaiting.Task;
+
+        Assert.IsFalse(firstDispose.IsCompleted);
+        Assert.IsFalse(secondDispose.IsCompleted);
+        releaseSave.SetResult();
+        await saveTask;
+        await Task.WhenAll(firstDispose, secondDispose);
+
+        store.Dispose();
+        await Assert.ThrowsExactlyAsync<ObjectDisposedException>(
+            () => store.LoadAsync(CancellationToken.None));
         AssertNoTemporaryFiles(directory.Path);
     }
 

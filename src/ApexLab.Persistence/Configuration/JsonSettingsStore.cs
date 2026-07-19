@@ -55,25 +55,35 @@ public sealed class JsonSettingsStore : ISettingsStore
             await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             gateEntered = true;
             cancellationToken.ThrowIfCancellationRequested();
-            if (!File.Exists(SettingsFilePath))
-            {
-                return _defaults;
-            }
 
+            FileStream stream;
             try
             {
-                await using var stream = new FileStream(
+                stream = new FileStream(
                     SettingsFilePath,
                     FileMode.Open,
                     FileAccess.Read,
                     FileShare.Read,
                     bufferSize: 4096,
                     FileOptions.Asynchronous | FileOptions.SequentialScan);
+            }
+            catch (FileNotFoundException)
+            {
+                return _defaults;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return _defaults;
+            }
+
+            try
+            {
+                await using var ownedStream = stream;
                 await _hooks.AfterLoadOpenedAsync(
                     SettingsFilePath,
                     cancellationToken).ConfigureAwait(false);
                 var options = await JsonSerializer.DeserializeAsync<ApexLabOptions>(
-                    stream,
+                    ownedStream,
                     SerializerOptions,
                     cancellationToken).ConfigureAwait(false);
 
@@ -211,6 +221,7 @@ public sealed class JsonSettingsStore : ISettingsStore
             _hooks.AfterAdmissionClosed();
         }
 
+        _hooks.BeforeDisposalDrainWait();
         _operationsDrained.Task.GetAwaiter().GetResult();
 
         bool ownsResourceDisposal;
@@ -293,4 +304,6 @@ internal sealed class JsonSettingsStoreHooks
         static (_, _, _) => ValueTask.CompletedTask;
 
     internal Action AfterAdmissionClosed { get; init; } = static () => { };
+
+    internal Action BeforeDisposalDrainWait { get; init; } = static () => { };
 }
