@@ -87,7 +87,7 @@ internal static class ProjectGraphValidator
 
             if (PureProjects.Contains(projectName))
             {
-                AddForbiddenPackageViolations(projectName, document, violations);
+                AddPureProjectInfrastructureViolations(projectName, document, violations);
             }
 
             var referencedProjects = document
@@ -102,6 +102,14 @@ internal static class ProjectGraphValidator
                 foreach (var referencedTestProject in referencedProjects.Where(IsTestProject))
                 {
                     violations.Add($"{projectName} -> {referencedTestProject}");
+                }
+
+                if (!projectName.Equals("ApexLab.App", StringComparison.OrdinalIgnoreCase) &&
+                    referencedProjects.Contains(
+                        "ApexLab.App",
+                        StringComparer.OrdinalIgnoreCase))
+                {
+                    violations.Add($"{projectName} -> ApexLab.App");
                 }
             }
 
@@ -132,11 +140,22 @@ internal static class ProjectGraphValidator
         return violations.Order(StringComparer.Ordinal).ToList();
     }
 
-    private static void AddForbiddenPackageViolations(
+    private static void AddPureProjectInfrastructureViolations(
         string projectName,
         XDocument document,
         ICollection<string> violations)
     {
+        var usesWindowsDesktopSdk = string.Equals(
+            document.Root?.Attribute("Sdk")?.Value,
+            "Microsoft.NET.Sdk.WindowsDesktop",
+            StringComparison.OrdinalIgnoreCase);
+        var usesWpfFrameworkReference = document
+            .Descendants("FrameworkReference")
+            .Select(reference => reference.Attribute("Include")?.Value)
+            .Any(framework => string.Equals(
+                framework,
+                "Microsoft.WindowsDesktop.App.WPF",
+                StringComparison.OrdinalIgnoreCase));
         var usesWpf = document
             .Descendants("UseWPF")
             .Any(element => string.Equals(
@@ -144,7 +163,7 @@ internal static class ProjectGraphValidator
                 "true",
                 StringComparison.OrdinalIgnoreCase));
 
-        if (usesWpf)
+        if (usesWindowsDesktopSdk || usesWpfFrameworkReference || usesWpf)
         {
             violations.Add($"{projectName} -> framework WPF");
         }

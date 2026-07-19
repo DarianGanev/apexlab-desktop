@@ -78,6 +78,30 @@ public sealed class ProjectBoundaryTests
     }
 
     [TestMethod]
+    public void Non_app_production_project_reports_reference_to_composition_root()
+    {
+        const string forbiddenEdge = "ApexLab.FutureAdapter -> ApexLab.App";
+        var projectFiles = new Dictionary<string, string>
+        {
+            ["src/ApexLab.FutureAdapter/ApexLab.FutureAdapter.csproj"] =
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <ItemGroup>
+                    <ProjectReference Include="../ApexLab.App/ApexLab.App.csproj" />
+                  </ItemGroup>
+                </Project>
+                """,
+        };
+
+        var violations = ProjectGraphValidator.FindViolations(projectFiles);
+
+        CollectionAssert.Contains(
+            violations.ToList(),
+            forbiddenEdge,
+            $"Expected violation: {forbiddenEdge}");
+    }
+
+    [TestMethod]
     public void Missing_required_reference_reports_the_named_edge()
     {
         const string missingEdge =
@@ -114,6 +138,50 @@ public sealed class ProjectBoundaryTests
                   <PropertyGroup>
                     <UseWPF>true</UseWPF>
                   </PropertyGroup>
+                </Project>
+                """,
+        };
+
+        var violations = ProjectGraphValidator.FindViolations(projectFiles);
+
+        CollectionAssert.Contains(
+            violations.ToList(),
+            forbiddenFramework,
+            $"Expected violation: {forbiddenFramework}");
+    }
+
+    [TestMethod]
+    public void Pure_project_reports_windows_desktop_sdk_dependency()
+    {
+        const string forbiddenFramework = "ApexLab.Domain -> framework WPF";
+        var projectFiles = new Dictionary<string, string>
+        {
+            ["src/ApexLab.Domain/ApexLab.Domain.csproj"] =
+                """
+                <Project Sdk="Microsoft.NET.Sdk.WindowsDesktop" />
+                """,
+        };
+
+        var violations = ProjectGraphValidator.FindViolations(projectFiles);
+
+        CollectionAssert.Contains(
+            violations.ToList(),
+            forbiddenFramework,
+            $"Expected violation: {forbiddenFramework}");
+    }
+
+    [TestMethod]
+    public void Pure_project_reports_wpf_framework_reference()
+    {
+        const string forbiddenFramework = "ApexLab.Domain -> framework WPF";
+        var projectFiles = new Dictionary<string, string>
+        {
+            ["src/ApexLab.Domain/ApexLab.Domain.csproj"] =
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <ItemGroup>
+                    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
+                  </ItemGroup>
                 </Project>
                 """,
         };
