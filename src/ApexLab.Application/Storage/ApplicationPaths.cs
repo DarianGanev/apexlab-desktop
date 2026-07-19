@@ -185,8 +185,13 @@ public sealed record ApplicationPaths
         }
 
         return baseName.Length == 4
-            && baseName[3] is >= '1' and <= '9'
+            && IsWindowsReservedDeviceDigit(baseName[3])
             && (baseName.StartsWith("COM", StringComparison.OrdinalIgnoreCase)
                 || baseName.StartsWith("LPT", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsWindowsReservedDeviceDigit(char value)
+    {
+        return value is >= '1' and <= '9' or '\u00B9' or '\u00B2' or '\u00B3';
     }
 }
