@@ -1,0 +1,83 @@
+# Visual Studio, VS Code, and JetBrains user state
+.vs/
+.vscode/
+.idea/
+.agents/
+.codex/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.DotSettings.user
+
+# .NET build and test output
+[Bb]in/
+[Oo]bj/
+[Aa]rtifacts/
+[Pp]ublish/
+[Pp]ackages/
+TestResults/
+coverage/
+coverage.*
+*.coverage
+*.coveragexml
+BenchmarkDotNet.Artifacts/
+
+# Logs, crash data, and temporary files
+logs/
+*.log
+*.dmp
+*.stackdump
+*.tmp
+*.temp
+*.partial
+~$*
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+appsettings.*.local.json
+secrets.json
+*.pfx
+*.p12
+*.snk
+*.key
+*.pem
+
+# Local databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Personal telemetry and generated data
+data/
+captures/
+sessions/
+telemetry/
+exports/
+backups/
+imports/
+profiles/
+research/private/
+vendor-specs/
+*.apexlab
+
+# Operating-system files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local worktrees
+.worktrees/
+
+# NuGet scratch/cache files that do not belong in source
+*.nupkg
+*.snupkg
+project.lock.json
+
+# Preserve intentionally committed synthetic fixtures under tests/**/Fixtures/.
+# Do not add a global *.bin ignore rule.
