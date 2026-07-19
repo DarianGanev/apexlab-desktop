@@ -114,6 +114,42 @@ public sealed class ApplicationPathsTests
     }
 
     [TestMethod]
+    public void Factories_RejectWindowsReservedAndInvalidFilenameComponents()
+    {
+        Assert.IsTrue(OperatingSystem.IsWindows(), "ApexLab desktop path policy is Windows-specific.");
+
+        var root = Path.GetPathRoot(Path.GetFullPath(Path.GetTempPath()));
+        Assert.IsNotNull(root);
+
+        foreach (var component in WindowsPathComponentCases.UnsafeComponents())
+        {
+            var invalidPath = Path.Combine(root, "safe", component, "apexlab-data");
+            AssertBothFactoriesReject(invalidPath);
+        }
+    }
+
+    [TestMethod]
+    public void Factories_AcceptRepresentativeWindowsDirectoryNames()
+    {
+        Assert.IsTrue(OperatingSystem.IsWindows(), "ApexLab desktop path policy is Windows-specific.");
+
+        var root = Path.GetPathRoot(Path.GetFullPath(Path.GetTempPath()));
+        Assert.IsNotNull(root);
+
+        foreach (var component in WindowsPathComponentCases.AcceptedComponents())
+        {
+            var validPath = Path.Combine(root, "safe", component, "apexlab-data");
+
+            Assert.AreEqual(
+                Path.GetFullPath(Path.Combine(validPath, "ApexLab")),
+                ApplicationPaths.FromLocalApplicationData(validPath).RootDirectory);
+            Assert.AreEqual(
+                Path.GetFullPath(validPath),
+                ApplicationPaths.FromRoot(validPath).RootDirectory);
+        }
+    }
+
+    [TestMethod]
     public void FromRoot_UsesTheSuppliedNormalizedDataRoot()
     {
         var suppliedRoot = Path.Combine(

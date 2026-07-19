@@ -141,6 +141,39 @@ public sealed class ApexLabOptionsTests
     }
 
     [TestMethod]
+    public void Validate_RejectsWindowsReservedAndInvalidFilenameComponents()
+    {
+        Assert.IsTrue(OperatingSystem.IsWindows(), "ApexLab desktop path policy is Windows-specific.");
+
+        var root = Path.GetPathRoot(Path.GetFullPath(Path.GetTempPath()));
+        Assert.IsNotNull(root);
+
+        foreach (var component in WindowsPathComponentCases.UnsafeComponents())
+        {
+            var invalidPath = Path.Combine(root, "safe", component, "apexlab-data");
+            var options = new ApexLabOptions(invalidPath);
+
+            AssertSingleFailure(options, nameof(ApexLabOptions.DataRootPath));
+        }
+    }
+
+    [TestMethod]
+    public void Validate_AcceptsRepresentativeWindowsDirectoryNames()
+    {
+        Assert.IsTrue(OperatingSystem.IsWindows(), "ApexLab desktop path policy is Windows-specific.");
+
+        var root = Path.GetPathRoot(Path.GetFullPath(Path.GetTempPath()));
+        Assert.IsNotNull(root);
+
+        foreach (var component in WindowsPathComponentCases.AcceptedComponents())
+        {
+            var validPath = Path.Combine(root, "safe", component, "apexlab-data");
+
+            Assert.IsEmpty(ApexLabOptionsValidator.Validate(new ApexLabOptions(validPath)));
+        }
+    }
+
+    [TestMethod]
     public void Validate_RejectsNonLoopbackAddressWhenLanIsDisabled()
     {
         var options = new ApexLabOptions(ValidDataRoot)

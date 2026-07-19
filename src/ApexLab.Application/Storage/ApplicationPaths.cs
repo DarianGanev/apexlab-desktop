@@ -64,9 +64,11 @@ public sealed record ApplicationPaths
             throw new ArgumentException("The data directory must be an absolute path.", parameterName);
         }
 
-        if (ContainsTraversalSegment(path))
+        if (ContainsUnsafePathSegment(path))
         {
-            throw new ArgumentException("The data directory cannot contain traversal segments.", parameterName);
+            throw new ArgumentException(
+                "The data directory contains an unsafe or non-canonical path component.",
+                parameterName);
         }
 
         string normalizedPath;
@@ -127,17 +129,64 @@ public sealed record ApplicationPaths
             && pathRoot[2] == Path.DirectorySeparatorChar;
     }
 
-    private static bool ContainsTraversalSegment(string path)
+    private static bool ContainsUnsafePathSegment(string path)
     {
-        return path
+        var segments = path
             .Split(
                 [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-                StringSplitOptions.RemoveEmptyEntries)
-            .Any(segment =>
+                StringSplitOptions.RemoveEmptyEntries);
+
+        for (var index = 0; index < segments.Length; index++)
+        {
+            var segment = segments[index];
+            if (segment is "." or "..")
             {
-                var normalizedSegment = segment.TrimEnd(' ');
-                return normalizedSegment is "." or ".."
-                    || OperatingSystem.IsWindows() && segment[^1] is ' ' or '.';
-            });
+                return true;
+            }
+
+            if (OperatingSystem.IsWindows()
+                && !(index == 0 && IsWindowsDriveDesignator(segment))
+                && IsUnsafeWindowsSegment(segment))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsWindowsDriveDesignator(string segment)
+    {
+        return segment.Length == 2
+            && char.IsAsciiLetter(segment[0])
+            && segment[1] == Path.VolumeSeparatorChar;
+    }
+
+    private static bool IsUnsafeWindowsSegment(string segment)
+    {
+        if (segment[^1] is ' ' or '.'
+            || segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            return true;
+        }
+
+        var firstPeriodIndex = segment.IndexOf('.');
+        var baseName = firstPeriodIndex >= 0
+            ? segment[..firstPeriodIndex]
+            : segment;
+
+        if (baseName.EndsWith(' ')
+            || baseName.Equals("CON", StringComparison.OrdinalIgnoreCase)
+            || baseName.Equals("PRN", StringComparison.OrdinalIgnoreCase)
+            || baseName.Equals("AUX", StringComparison.OrdinalIgnoreCase)
+            || baseName.Equals("NUL", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return baseName.Length == 4
+            && baseName[3] is >= '1' and <= '9'
+            && (baseName.StartsWith("COM", StringComparison.OrdinalIgnoreCase)
+                || baseName.StartsWith("LPT", StringComparison.OrdinalIgnoreCase));
     }
 }
