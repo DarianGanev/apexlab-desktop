@@ -35,6 +35,12 @@ public sealed class ShellViewModel : ObservableObject
 
     private WorkflowArea _selectedArea = DriveArea;
     private string _currentRoute = DriveArea.Title;
+    private bool _isDriveSelected = true;
+    private bool _isReviewSelected;
+    private bool _isCoachSelected;
+    private bool _isDataSettingsSelected;
+    private bool _areReviewToolsVisible;
+    private bool _areDataToolsVisible;
 
     public ShellViewModel()
     {
@@ -57,6 +63,42 @@ public sealed class ShellViewModel : ObservableObject
         private set => SetProperty(ref _currentRoute, value);
     }
 
+    public bool IsDriveSelected
+    {
+        get => _isDriveSelected;
+        private set => SetProperty(ref _isDriveSelected, value);
+    }
+
+    public bool IsReviewSelected
+    {
+        get => _isReviewSelected;
+        private set => SetProperty(ref _isReviewSelected, value);
+    }
+
+    public bool IsCoachSelected
+    {
+        get => _isCoachSelected;
+        private set => SetProperty(ref _isCoachSelected, value);
+    }
+
+    public bool IsDataSettingsSelected
+    {
+        get => _isDataSettingsSelected;
+        private set => SetProperty(ref _isDataSettingsSelected, value);
+    }
+
+    public bool AreReviewToolsVisible
+    {
+        get => _areReviewToolsVisible;
+        private set => SetProperty(ref _areReviewToolsVisible, value);
+    }
+
+    public bool AreDataToolsVisible
+    {
+        get => _areDataToolsVisible;
+        private set => SetProperty(ref _areDataToolsVisible, value);
+    }
+
     public ICommand SelectAreaCommand { get; }
 
     public ICommand OpenCornerEditorCommand { get; }
@@ -71,19 +113,30 @@ public sealed class ShellViewModel : ObservableObject
             return;
         }
 
-        SelectedArea = requestedArea;
+        ApplySelection(requestedArea);
         CurrentRoute = requestedArea.Title;
     }
 
     private void OpenCornerEditor()
     {
-        SelectedArea = ReviewArea;
+        ApplySelection(ReviewArea);
         CurrentRoute = "Review / Corner Editor";
     }
 
     private void OpenReplayDiagnostics()
     {
-        SelectedArea = DataArea;
+        ApplySelection(DataArea);
         CurrentRoute = "Data & Settings / Replay & Diagnostics";
+    }
+
+    private void ApplySelection(WorkflowArea area)
+    {
+        SelectedArea = area;
+        IsDriveSelected = area == DriveArea;
+        IsReviewSelected = area == ReviewArea;
+        IsCoachSelected = area == CoachArea;
+        IsDataSettingsSelected = area == DataArea;
+        AreReviewToolsVisible = area == ReviewArea;
+        AreDataToolsVisible = area == DataArea;
     }
 }

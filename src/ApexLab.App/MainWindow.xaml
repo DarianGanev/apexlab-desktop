@@ -24,6 +24,7 @@
         <SolidColorBrush x:Key="AccentBrush" Color="#39D98A" />
         <SolidColorBrush x:Key="AccentMutedBrush" Color="#173B31" />
         <SolidColorBrush x:Key="SecondaryTextBrush" Color="#9EACBB" />
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
 
         <Style x:Key="StrongFocusVisual">
             <Setter Property="Control.Template">
@@ -38,7 +39,7 @@
             </Setter>
         </Style>
 
-        <Style x:Key="NavigationButtonStyle" TargetType="Button">
+        <Style x:Key="NavigationSelectionStyle" TargetType="RadioButton">
             <Setter Property="Height" Value="52" />
             <Setter Property="Margin" Value="0,0,0,8" />
             <Setter Property="Padding" Value="16,0" />
@@ -50,19 +51,29 @@
             <Setter Property="FontSize" Value="14" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="AutomationProperties.ItemStatus" Value="Not selected" />
             <Setter Property="FocusVisualStyle" Value="{StaticResource StrongFocusVisual}" />
             <Setter Property="Template">
                 <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Chrome"
-                                Padding="{TemplateBinding Padding}"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="8">
-                            <ContentPresenter VerticalAlignment="Center"
-                                              RecognizesAccessKey="True" />
-                        </Border>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Grid>
+                            <Border x:Name="Chrome"
+                                    Padding="{TemplateBinding Padding}"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="8">
+                                <ContentPresenter VerticalAlignment="Center"
+                                                  RecognizesAccessKey="True" />
+                            </Border>
+                            <Border x:Name="SelectedIndicator"
+                                    Width="4"
+                                    Margin="0,8"
+                                    HorizontalAlignment="Left"
+                                    Background="{StaticResource AccentBrush}"
+                                    CornerRadius="2"
+                                    Opacity="0" />
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Chrome" Property="Background" Value="#1D2A37" />
@@ -72,21 +83,32 @@
                                 <Setter TargetName="Chrome" Property="Background" Value="#173B31" />
                                 <Setter Property="Foreground" Value="#A6F2CE" />
                             </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource AccentMutedBrush}" />
+                                <Setter TargetName="Chrome" Property="BorderBrush" Value="#31795E" />
+                                <Setter TargetName="SelectedIndicator" Property="Opacity" Value="1" />
+                                <Setter Property="Foreground" Value="#C7F9E2" />
+                                <Setter Property="AutomationProperties.ItemStatus" Value="Selected" />
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
 
-        <Style x:Key="SecondaryButtonStyle"
-               TargetType="Button"
-               BasedOn="{StaticResource NavigationButtonStyle}">
+        <Style x:Key="SecondaryButtonStyle" TargetType="Button">
             <Setter Property="Height" Value="42" />
             <Setter Property="Margin" Value="0,6,0,0" />
             <Setter Property="Padding" Value="12,0" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
             <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="#DCE5ED" />
             <Setter Property="Background" Value="#141E29" />
             <Setter Property="BorderBrush" Value="#2A3949" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource StrongFocusVisual}" />
         </Style>
 
         <Style x:Key="CardStyle" TargetType="Border">
@@ -159,55 +181,77 @@
                     Background="{StaticResource PanelBrush}"
                     BorderBrush="{StaticResource HairlineBrush}"
                     BorderThickness="0,0,1,0">
-                <DockPanel LastChildFill="True">
-                    <StackPanel DockPanel.Dock="Top">
+                <StackPanel>
                         <TextBlock Margin="8,0,0,14"
                                    Foreground="{StaticResource SecondaryTextBrush}"
                                    FontSize="11"
                                    FontWeight="Bold"
                                    Text="WORKFLOW" />
-                        <Button Tag="PrimaryNavigation"
-                                Content="_Drive"
-                                Command="{Binding SelectAreaCommand}"
-                                CommandParameter="{Binding PrimaryAreas[0]}"
-                                Style="{StaticResource NavigationButtonStyle}"
-                                AutomationProperties.Name="Drive" />
-                        <Button Tag="PrimaryNavigation"
-                                Content="_Review"
-                                Command="{Binding SelectAreaCommand}"
-                                CommandParameter="{Binding PrimaryAreas[1]}"
-                                Style="{StaticResource NavigationButtonStyle}"
-                                AutomationProperties.Name="Review" />
-                        <Button Tag="PrimaryNavigation"
-                                Content="_Coach"
-                                Command="{Binding SelectAreaCommand}"
-                                CommandParameter="{Binding PrimaryAreas[2]}"
-                                Style="{StaticResource NavigationButtonStyle}"
-                                AutomationProperties.Name="Coach" />
-                        <Button Tag="PrimaryNavigation"
-                                Content="Data &amp; _Settings"
-                                Command="{Binding SelectAreaCommand}"
-                                CommandParameter="{Binding PrimaryAreas[3]}"
-                                Style="{StaticResource NavigationButtonStyle}"
-                                AutomationProperties.Name="Data and Settings" />
-                    </StackPanel>
-
-                    <StackPanel DockPanel.Dock="Bottom">
-                        <TextBlock Margin="8,18,0,7"
+                        <RadioButton x:Name="DriveNavigation"
+                                     Tag="PrimaryNavigation"
+                                     GroupName="PrimaryWorkflow"
+                                     Content="_Drive"
+                                     IsChecked="{Binding IsDriveSelected, Mode=OneWay}"
+                                     Command="{Binding SelectAreaCommand}"
+                                     CommandParameter="{Binding PrimaryAreas[0]}"
+                                     Style="{StaticResource NavigationSelectionStyle}"
+                                     AutomationProperties.Name="Drive" />
+                        <RadioButton x:Name="ReviewNavigation"
+                                     Tag="PrimaryNavigation"
+                                     GroupName="PrimaryWorkflow"
+                                     Content="_Review"
+                                     IsChecked="{Binding IsReviewSelected, Mode=OneWay}"
+                                     Command="{Binding SelectAreaCommand}"
+                                     CommandParameter="{Binding PrimaryAreas[1]}"
+                                     Style="{StaticResource NavigationSelectionStyle}"
+                                     AutomationProperties.Name="Review" />
+                        <StackPanel x:Name="ReviewToolsPanel"
+                                    Margin="24,0,0,10"
+                                    Visibility="{Binding AreReviewToolsVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <TextBlock Margin="8,4,0,3"
+                                       Foreground="{StaticResource SecondaryTextBrush}"
+                                       FontSize="10"
+                                       FontWeight="Bold"
+                                       Text="REVIEW TOOLS" />
+                            <Button x:Name="CornerEditorButton"
+                                    Content="Corner Editor"
+                                    Command="{Binding OpenCornerEditorCommand}"
+                                    Style="{StaticResource SecondaryButtonStyle}"
+                                    AutomationProperties.Name="Open Corner Editor within Review" />
+                        </StackPanel>
+                        <RadioButton x:Name="CoachNavigation"
+                                     Tag="PrimaryNavigation"
+                                     GroupName="PrimaryWorkflow"
+                                     Content="_Coach"
+                                     IsChecked="{Binding IsCoachSelected, Mode=OneWay}"
+                                     Command="{Binding SelectAreaCommand}"
+                                     CommandParameter="{Binding PrimaryAreas[2]}"
+                                     Style="{StaticResource NavigationSelectionStyle}"
+                                     AutomationProperties.Name="Coach" />
+                        <RadioButton x:Name="DataSettingsNavigation"
+                                     Tag="PrimaryNavigation"
+                                     GroupName="PrimaryWorkflow"
+                                     Content="Data &amp; _Settings"
+                                     IsChecked="{Binding IsDataSettingsSelected, Mode=OneWay}"
+                                     Command="{Binding SelectAreaCommand}"
+                                     CommandParameter="{Binding PrimaryAreas[3]}"
+                                     Style="{StaticResource NavigationSelectionStyle}"
+                                     AutomationProperties.Name="Data and Settings" />
+                        <StackPanel x:Name="DataToolsPanel"
+                                    Margin="24,0,0,0"
+                                    Visibility="{Binding AreDataToolsVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <TextBlock Margin="8,4,0,3"
                                    Foreground="{StaticResource SecondaryTextBrush}"
-                                   FontSize="11"
+                                   FontSize="10"
                                    FontWeight="Bold"
-                                   Text="ADVANCED ROUTES" />
-                        <Button Content="Corner Editor"
-                                Command="{Binding OpenCornerEditorCommand}"
-                                Style="{StaticResource SecondaryButtonStyle}"
-                                AutomationProperties.Name="Open Corner Editor within Review" />
-                        <Button Content="Replay &amp; Diagnostics"
+                                   Text="DATA TOOLS" />
+                        <Button x:Name="ReplayDiagnosticsButton"
+                                Content="Replay &amp; Diagnostics"
                                 Command="{Binding OpenReplayDiagnosticsCommand}"
                                 Style="{StaticResource SecondaryButtonStyle}"
                                 AutomationProperties.Name="Open Replay and Diagnostics within Data and Settings" />
                     </StackPanel>
-                </DockPanel>
+                </StackPanel>
             </Border>
 
             <ScrollViewer Grid.Column="1"

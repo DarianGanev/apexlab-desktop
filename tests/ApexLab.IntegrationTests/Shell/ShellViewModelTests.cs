@@ -35,6 +35,12 @@ public sealed class ShellViewModelTests
 
         Assert.AreEqual("Drive", subject.SelectedArea.Title);
         Assert.AreEqual("Drive", subject.CurrentRoute);
+        Assert.IsTrue(subject.IsDriveSelected);
+        Assert.IsFalse(subject.IsReviewSelected);
+        Assert.IsFalse(subject.IsCoachSelected);
+        Assert.IsFalse(subject.IsDataSettingsSelected);
+        Assert.IsFalse(subject.AreReviewToolsVisible);
+        Assert.IsFalse(subject.AreDataToolsVisible);
     }
 
     [TestMethod]
@@ -59,6 +65,29 @@ public sealed class ShellViewModelTests
     }
 
     [TestMethod]
+    public void Selection_state_notifies_only_the_properties_that_actually_change()
+    {
+        var subject = new ShellViewModel();
+        var propertyNames = new List<string?>();
+        subject.PropertyChanged += (_, args) => propertyNames.Add(args.PropertyName);
+        var review = subject.PrimaryAreas.Single(area => area.Title == "Review");
+
+        subject.SelectAreaCommand.Execute(review);
+        subject.SelectAreaCommand.Execute(review);
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                nameof(ShellViewModel.SelectedArea),
+                nameof(ShellViewModel.IsDriveSelected),
+                nameof(ShellViewModel.IsReviewSelected),
+                nameof(ShellViewModel.AreReviewToolsVisible),
+                nameof(ShellViewModel.CurrentRoute),
+            },
+            propertyNames);
+    }
+
+    [TestMethod]
     public void Corner_editor_routes_within_review_instead_of_becoming_primary_navigation()
     {
         var subject = new ShellViewModel();
@@ -67,6 +96,9 @@ public sealed class ShellViewModelTests
 
         Assert.AreEqual("Review", subject.SelectedArea.Title);
         Assert.AreEqual("Review / Corner Editor", subject.CurrentRoute);
+        Assert.IsTrue(subject.IsReviewSelected);
+        Assert.IsTrue(subject.AreReviewToolsVisible);
+        Assert.IsFalse(subject.AreDataToolsVisible);
         Assert.IsFalse(subject.PrimaryAreas.Any(area => area.Title.Contains("Corner", StringComparison.Ordinal)));
     }
 
@@ -79,6 +111,9 @@ public sealed class ShellViewModelTests
 
         Assert.AreEqual("Data & Settings", subject.SelectedArea.Title);
         Assert.AreEqual("Data & Settings / Replay & Diagnostics", subject.CurrentRoute);
+        Assert.IsTrue(subject.IsDataSettingsSelected);
+        Assert.IsFalse(subject.AreReviewToolsVisible);
+        Assert.IsTrue(subject.AreDataToolsVisible);
         Assert.IsFalse(subject.PrimaryAreas.Any(area => area.Title.Contains("Replay", StringComparison.Ordinal)));
     }
 
