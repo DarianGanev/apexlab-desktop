@@ -1,4 +1,4 @@
-using ApexLab.App.Mvvm;
+using ApexLab.App.Presentation;
 
 namespace ApexLab.IntegrationTests.App;
 
@@ -73,6 +73,18 @@ public sealed class MvvmPrimitivesTests
         Assert.AreEqual(1, raisedCount);
         Assert.AreSame(command, eventSender);
         Assert.AreSame(EventArgs.Empty, eventArgs);
+    }
+
+    [TestMethod]
+    public void Relay_command_forwards_its_parameter()
+    {
+        object? received = null;
+        var command = new RelayCommand(parameter => received = parameter);
+        var expected = new object();
+
+        command.Execute(expected);
+
+        Assert.AreSame(expected, received);
     }
 
     private sealed class TestObservable : ObservableObject
