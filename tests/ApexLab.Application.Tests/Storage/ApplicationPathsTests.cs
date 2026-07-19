@@ -26,7 +26,7 @@ public sealed class ApplicationPathsTests
     }
 
     [TestMethod]
-    public void FromLocalApplicationData_DoesNotTouchFileSystem()
+    public void Factories_DoNotTouchFileSystem()
     {
         var localApplicationData = Path.Combine(
             Path.GetTempPath(),
@@ -35,31 +35,81 @@ public sealed class ApplicationPathsTests
         Assert.IsFalse(Directory.Exists(localApplicationData));
 
         _ = ApplicationPaths.FromLocalApplicationData(localApplicationData);
+        _ = ApplicationPaths.FromRoot(localApplicationData);
 
         Assert.IsFalse(Directory.Exists(localApplicationData));
     }
 
     [TestMethod]
-    public void FromLocalApplicationData_RejectsUnsafeInputs()
+    public void Factories_RejectEmptyRelativeAndLocalRootOnlyInputs()
     {
         var root = Path.GetPathRoot(Path.GetFullPath(Path.GetTempPath()));
         Assert.IsNotNull(root);
 
-        var traversalPath = Path.Combine(root, "safe", "..", "local-app-data");
         var invalidPaths = new[]
         {
             string.Empty,
             "   ",
             "relative-path",
             root,
-            traversalPath,
         };
 
         foreach (var invalidPath in invalidPaths)
         {
-            Assert.ThrowsExactly<ArgumentException>(
-                () => ApplicationPaths.FromLocalApplicationData(invalidPath),
-                $"Expected '{invalidPath}' to be rejected.");
+            AssertBothFactoriesReject(invalidPath);
+        }
+    }
+
+    [TestMethod]
+    public void Factories_RejectWindowsDeviceNtAndNetworkNamespacePaths()
+    {
+        Assert.IsTrue(OperatingSystem.IsWindows(), "ApexLab desktop path policy is Windows-specific.");
+
+        var invalidPaths = new[]
+        {
+            @"\\?\C:\",
+            @"\\?\C:\apexlab-data",
+            @"//?/C:/",
+            @"//?/C:/apexlab-data",
+            @"\\.\C:\",
+            @"\\.\C:\apexlab-data",
+            @"//./C:/apexlab-data",
+            @"\??\C:\",
+            @"\??\C:\apexlab-data",
+            @"\\??\C:\apexlab-data",
+            @"\\?\UNC\server\share\",
+            @"\\?\UNC\server\share\apexlab-data",
+            @"\\server\share\",
+            @"\\server\share\apexlab-data",
+        };
+
+        foreach (var invalidPath in invalidPaths)
+        {
+            AssertBothFactoriesReject(invalidPath);
+        }
+    }
+
+    [TestMethod]
+    public void Factories_RejectMixedSeparatorAndWindowsNormalizedTraversalSegments()
+    {
+        Assert.IsTrue(OperatingSystem.IsWindows(), "ApexLab desktop path policy is Windows-specific.");
+
+        var root = Path.GetPathRoot(Path.GetFullPath(Path.GetTempPath()));
+        Assert.IsNotNull(root);
+
+        var invalidPaths = new[]
+        {
+            $@"{root}safe/../apexlab-data",
+            $@"{root}safe\../apexlab-data",
+            $@"{root}safe/..\apexlab-data",
+            $@"{root}safe\.. \apexlab-data",
+            $@"{root}safe\.. .\apexlab-data",
+            $@"{root}safe\... \apexlab-data",
+        };
+
+        foreach (var invalidPath in invalidPaths)
+        {
+            AssertBothFactoriesReject(invalidPath);
         }
     }
 
@@ -73,5 +123,15 @@ public sealed class ApplicationPathsTests
         var paths = ApplicationPaths.FromRoot(suppliedRoot);
 
         Assert.AreEqual(Path.TrimEndingDirectorySeparator(Path.GetFullPath(suppliedRoot)), paths.RootDirectory);
+    }
+
+    private static void AssertBothFactoriesReject(string invalidPath)
+    {
+        Assert.ThrowsExactly<ArgumentException>(
+            () => ApplicationPaths.FromLocalApplicationData(invalidPath),
+            $"Expected local-application-data factory to reject '{invalidPath}'.");
+        Assert.ThrowsExactly<ArgumentException>(
+            () => ApplicationPaths.FromRoot(invalidPath),
+            $"Expected data-root factory to reject '{invalidPath}'.");
     }
 }

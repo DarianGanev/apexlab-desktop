@@ -52,6 +52,13 @@ public sealed record ApplicationPaths
             throw new ArgumentException("A data directory is required.", parameterName);
         }
 
+        if (UsesNonLocalOrDeviceNamespace(path))
+        {
+            throw new ArgumentException(
+                "The data directory must use a local filesystem path without a device namespace.",
+                parameterName);
+        }
+
         if (!Path.IsPathFullyQualified(path))
         {
             throw new ArgumentException("The data directory must be an absolute path.", parameterName);
@@ -74,10 +81,10 @@ public sealed record ApplicationPaths
         }
 
         var pathRoot = Path.GetPathRoot(normalizedPath);
-        if (pathRoot is null
+        if (!HasCanonicalLocalRoot(pathRoot)
             || string.Equals(
                 normalizedPath,
-                Path.TrimEndingDirectorySeparator(pathRoot),
+                Path.TrimEndingDirectorySeparator(pathRoot!),
                 OperatingSystem.IsWindows()
                     ? StringComparison.OrdinalIgnoreCase
                     : StringComparison.Ordinal))
@@ -86,6 +93,38 @@ public sealed record ApplicationPaths
         }
 
         return normalizedPath;
+    }
+
+    private static bool UsesNonLocalOrDeviceNamespace(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        var windowsPath = path.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+
+        // ApexLab intentionally keeps its private evidence store on a local drive.
+        return windowsPath.StartsWith(@"\\", StringComparison.Ordinal)
+            || windowsPath.StartsWith(@"\??\", StringComparison.Ordinal);
+    }
+
+    private static bool HasCanonicalLocalRoot(string? pathRoot)
+    {
+        if (pathRoot is null)
+        {
+            return false;
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            return Path.IsPathFullyQualified(pathRoot);
+        }
+
+        return pathRoot.Length == 3
+            && char.IsAsciiLetter(pathRoot[0])
+            && pathRoot[1] == Path.VolumeSeparatorChar
+            && pathRoot[2] == Path.DirectorySeparatorChar;
     }
 
     private static bool ContainsTraversalSegment(string path)
@@ -97,7 +136,8 @@ public sealed record ApplicationPaths
             .Any(segment =>
             {
                 var normalizedSegment = segment.TrimEnd(' ');
-                return normalizedSegment is "." or "..";
+                return normalizedSegment is "." or ".."
+                    || OperatingSystem.IsWindows() && segment[^1] is ' ' or '.';
             });
     }
 }

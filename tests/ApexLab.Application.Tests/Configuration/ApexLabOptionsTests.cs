@@ -82,8 +82,62 @@ public sealed class ApexLabOptionsTests
     {
         var defaults = new ApexLabOptions(ValidDataRoot);
 
-        AssertHasFailure(defaults with { UdpPort = -1 }, nameof(ApexLabOptions.UdpPort));
-        AssertHasFailure(defaults with { UdpPort = 65_536 }, nameof(ApexLabOptions.UdpPort));
+        AssertSingleFailure(defaults with { UdpPort = -1 }, nameof(ApexLabOptions.UdpPort));
+        AssertSingleFailure(defaults with { UdpPort = 65_536 }, nameof(ApexLabOptions.UdpPort));
+    }
+
+    [TestMethod]
+    public void Validate_AcceptsInclusiveUdpPortBoundaries()
+    {
+        var defaults = new ApexLabOptions(ValidDataRoot);
+
+        Assert.IsEmpty(ApexLabOptionsValidator.Validate(defaults with { UdpPort = 1 }));
+        Assert.IsEmpty(ApexLabOptionsValidator.Validate(defaults with { UdpPort = 65_535 }));
+    }
+
+    [TestMethod]
+    public void Validate_RejectsSnapshotRateBelowMinimum()
+    {
+        var options = new ApexLabOptions(ValidDataRoot) { LiveSnapshotRateHz = 0 };
+
+        AssertSingleFailure(options, nameof(ApexLabOptions.LiveSnapshotRateHz));
+    }
+
+    [TestMethod]
+    public void Validate_RejectsNegativeRawChunkDuration()
+    {
+        var options = new ApexLabOptions(ValidDataRoot)
+        {
+            RawChunkDuration = TimeSpan.FromTicks(-1),
+        };
+
+        AssertSingleFailure(options, nameof(ApexLabOptions.RawChunkDuration));
+    }
+
+    [TestMethod]
+    public void Validate_RejectsNegativeStorageQuota()
+    {
+        var options = new ApexLabOptions(ValidDataRoot) { StorageQuotaBytes = -1 };
+
+        AssertSingleFailure(options, nameof(ApexLabOptions.StorageQuotaBytes));
+    }
+
+    [TestMethod]
+    public void Validate_RejectsEmptyDataRoot()
+    {
+        var options = new ApexLabOptions(string.Empty);
+
+        AssertSingleFailure(options, nameof(ApexLabOptions.DataRootPath));
+    }
+
+    [TestMethod]
+    public void Validate_RejectsRootOnlyDataPath()
+    {
+        var root = Path.GetPathRoot(Path.GetFullPath(Path.GetTempPath()));
+        Assert.IsNotNull(root);
+        var options = new ApexLabOptions(root);
+
+        AssertSingleFailure(options, nameof(ApexLabOptions.DataRootPath));
     }
 
     [TestMethod]
@@ -95,7 +149,7 @@ public sealed class ApexLabOptionsTests
             AllowLan = false,
         };
 
-        AssertHasFailure(options, nameof(ApexLabOptions.BindAddress));
+        AssertSingleFailure(options, nameof(ApexLabOptions.BindAddress));
     }
 
     [TestMethod]
@@ -117,15 +171,15 @@ public sealed class ApexLabOptionsTests
         Assert.IsNotNull(root);
         var options = new ApexLabOptions(Path.Combine(root, "safe", "..", "data"));
 
-        AssertHasFailure(options, nameof(ApexLabOptions.DataRootPath));
+        AssertSingleFailure(options, nameof(ApexLabOptions.DataRootPath));
     }
 
-    private static void AssertHasFailure(ApexLabOptions options, string expectedFieldName)
+    private static void AssertSingleFailure(ApexLabOptions options, string expectedFieldName)
     {
         var failures = ApexLabOptionsValidator.Validate(options);
 
-        Assert.IsTrue(
-            failures.Any(failure => failure.FieldName == expectedFieldName),
-            $"Expected a failure for {expectedFieldName}.");
+        Assert.HasCount(1, failures);
+        Assert.AreEqual(expectedFieldName, failures[0].FieldName);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(failures[0].Message));
     }
 }
