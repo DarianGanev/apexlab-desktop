@@ -1,0 +1,304 @@
+using System.Text;
+using ApexLab.Application.Configuration;
+using ApexLab.Persistence.Configuration;
+
+namespace ApexLab.Persistence.Tests.Configuration;
+
+[TestClass]
+public sealed class JsonSettingsStoreTests
+{
+    [TestMethod]
+    public async Task LoadAsync_WhenSettingsDoNotExist_ReturnsDefaultsWithoutWriting()
+    {
+        using var directory = new TemporaryDirectory(create: false);
+        var defaults = CreateOptions(directory.Path);
+        using var store = new JsonSettingsStore(defaults);
+
+        var loaded = await store.LoadAsync(CancellationToken.None);
+
+        Assert.AreEqual(defaults, loaded);
+        Assert.IsFalse(Directory.Exists(directory.Path));
+    }
+
+    [TestMethod]
+    public async Task SaveAndLoadAsync_RoundTripsValidatedOptions()
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        var configured = defaults with
+        {
+            UdpPort = 20_778,
+            LiveSnapshotRateHz = 12,
+            RawChunkDuration = TimeSpan.FromSeconds(7),
+            StorageQuotaBytes = 4_000_000_000,
+        };
+        using var store = new JsonSettingsStore(defaults);
+
+        await store.SaveAsync(configured, CancellationToken.None);
+        var loaded = await store.LoadAsync(CancellationToken.None);
+
+        Assert.AreEqual(configured, loaded);
+        Assert.IsEmpty(ApexLabOptionsValidator.Validate(loaded));
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_WritesStableUtf8JsonWithoutByteOrderMark()
+    {
+        using var directory = new TemporaryDirectory();
+        var options = CreateOptions(directory.Path) with
+        {
+            BindAddress = "127.0.0.1",
+            UdpPort = 31_337,
+            LiveSnapshotRateHz = 10,
+        };
+        using var store = new JsonSettingsStore(options);
+
+        await store.SaveAsync(options, CancellationToken.None);
+        var firstBytes = await File.ReadAllBytesAsync(store.SettingsFilePath);
+        await store.SaveAsync(options, CancellationToken.None);
+        var secondBytes = await File.ReadAllBytesAsync(store.SettingsFilePath);
+
+        CollectionAssert.AreEqual(firstBytes, secondBytes);
+        Assert.IsFalse(firstBytes.Length >= 3
+            && firstBytes[0] == 0xEF
+            && firstBytes[1] == 0xBB
+            && firstBytes[2] == 0xBF);
+        var json = new UTF8Encoding(false, true).GetString(firstBytes);
+        StringAssert.Contains(json, "\"udpPort\": 31337");
+        StringAssert.Contains(json, "\"rawChunkDuration\": \"00:00:05\"");
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_WhenCancelledBeforeCommit_PreservesPreviousFileAndRemovesSiblingTemp()
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        using var initialStore = new JsonSettingsStore(defaults);
+        await initialStore.SaveAsync(defaults, CancellationToken.None);
+        var previousBytes = await File.ReadAllBytesAsync(initialStore.SettingsFilePath);
+        using var cancellation = new CancellationTokenSource();
+        string? observedTempPath = null;
+        string? observedTargetPath = null;
+        using var interruptedStore = new JsonSettingsStore(
+            defaults,
+            (tempPath, targetPath, _) =>
+            {
+                observedTempPath = tempPath;
+                observedTargetPath = targetPath;
+                cancellation.Cancel();
+                return ValueTask.CompletedTask;
+            });
+
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(
+            () => interruptedStore.SaveAsync(defaults with { UdpPort = 30_001 }, cancellation.Token));
+
+        Assert.IsNotNull(observedTempPath);
+        Assert.IsNotNull(observedTargetPath);
+        Assert.AreEqual(Path.GetDirectoryName(observedTargetPath), Path.GetDirectoryName(observedTempPath));
+        CollectionAssert.AreEqual(previousBytes, await File.ReadAllBytesAsync(initialStore.SettingsFilePath));
+        Assert.IsFalse(File.Exists(observedTempPath));
+        AssertNoTemporaryFiles(directory.Path);
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_WhenCommitPreparationFails_PreservesPreviousFileAndPropagatesFailure()
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        using var initialStore = new JsonSettingsStore(defaults);
+        await initialStore.SaveAsync(defaults, CancellationToken.None);
+        var previousBytes = await File.ReadAllBytesAsync(initialStore.SettingsFilePath);
+        using var failingStore = new JsonSettingsStore(
+            defaults,
+            (_, _, _) => throw new IOException("Simulated storage failure."));
+
+        var exception = await Assert.ThrowsExactlyAsync<IOException>(
+            () => failingStore.SaveAsync(defaults with { UdpPort = 30_002 }, CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "Simulated storage failure");
+        CollectionAssert.AreEqual(previousBytes, await File.ReadAllBytesAsync(initialStore.SettingsFilePath));
+        AssertNoTemporaryFiles(directory.Path);
+    }
+
+    [TestMethod]
+    [DataRow("{\"udpPort\":")]
+    [DataRow("not-json")]
+    [DataRow("{\"dataRootPath\":\"relative\",\"udpPort\":20777}")]
+    public async Task LoadAsync_WhenSettingsAreInvalid_PreservesEvidenceBeforeReturningDefaults(string invalidJson)
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        using var store = new JsonSettingsStore(defaults);
+        await File.WriteAllTextAsync(store.SettingsFilePath, invalidJson, new UTF8Encoding(false));
+
+        var loaded = await store.LoadAsync(CancellationToken.None);
+
+        Assert.AreEqual(defaults, loaded);
+        Assert.IsFalse(File.Exists(store.SettingsFilePath));
+        var preservedFiles = Directory.GetFiles(directory.Path, "settings.invalid-*.json");
+        Assert.HasCount(1, preservedFiles);
+        Assert.AreEqual(invalidJson, await File.ReadAllTextAsync(preservedFiles[0]));
+    }
+
+    [TestMethod]
+    public async Task LoadAsync_WhenInvalidSettingsRepeat_UsesCollisionSafeDiagnosticNames()
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        using var store = new JsonSettingsStore(defaults);
+
+        await File.WriteAllTextAsync(store.SettingsFilePath, "first-invalid");
+        _ = await store.LoadAsync(CancellationToken.None);
+        await File.WriteAllTextAsync(store.SettingsFilePath, "second-invalid");
+        _ = await store.LoadAsync(CancellationToken.None);
+
+        var preservedFiles = Directory.GetFiles(directory.Path, "settings.invalid-*.json");
+        Assert.HasCount(2, preservedFiles);
+        Assert.AreEqual(2, preservedFiles.Select(Path.GetFileName).Distinct(StringComparer.Ordinal).Count());
+        var preservedContents = await Task.WhenAll(
+            preservedFiles.Select(path => File.ReadAllTextAsync(path)));
+        CollectionAssert.AreEquivalent(new[] { "first-invalid", "second-invalid" }, preservedContents);
+    }
+
+    [TestMethod]
+    public async Task LoadAsync_WhenCancelled_DoesNotMoveSettingsToDiagnostics()
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        using var store = new JsonSettingsStore(defaults);
+        await store.SaveAsync(defaults, CancellationToken.None);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => store.LoadAsync(cancellation.Token));
+
+        Assert.IsTrue(File.Exists(store.SettingsFilePath));
+        Assert.IsEmpty(Directory.GetFiles(directory.Path, "settings.invalid-*.json"));
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_ConcurrentCallsAreSerializedAndLeaveNoTemporaryFiles()
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackCount = 0;
+        using var store = new JsonSettingsStore(
+            defaults,
+            async (_, _, _) =>
+            {
+                if (Interlocked.Increment(ref callbackCount) == 1)
+                {
+                    firstEntered.SetResult();
+                    await releaseFirst.Task;
+                }
+            });
+
+        var firstSave = store.SaveAsync(defaults with { UdpPort = 30_003 }, CancellationToken.None);
+        await firstEntered.Task;
+        var secondOptions = defaults with { UdpPort = 30_004 };
+        var secondSave = store.SaveAsync(secondOptions, CancellationToken.None);
+
+        Assert.AreEqual(1, Volatile.Read(ref callbackCount));
+        Assert.IsFalse(secondSave.IsCompleted);
+        releaseFirst.SetResult();
+        await Task.WhenAll(firstSave, secondSave);
+
+        Assert.AreEqual(2, callbackCount);
+        Assert.AreEqual(secondOptions, await store.LoadAsync(CancellationToken.None));
+        AssertNoTemporaryFiles(directory.Path);
+    }
+
+    [TestMethod]
+    public void Constructor_UsesFixedContainedFilenameAndRejectsInvalidDefaults()
+    {
+        using var directory = new TemporaryDirectory();
+        using var store = new JsonSettingsStore(CreateOptions(directory.Path));
+
+        Assert.AreEqual(Path.Combine(Path.GetFullPath(directory.Path), "settings.json"), store.SettingsFilePath);
+        Assert.AreEqual(
+            Path.GetFullPath(directory.Path),
+            Path.GetDirectoryName(Path.GetFullPath(store.SettingsFilePath)));
+        Assert.ThrowsExactly<ArgumentException>(
+            () => new JsonSettingsStore(new ApexLabOptions("relative-root")));
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_RejectsInvalidOptionsWithoutChangingExistingFile()
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        using var store = new JsonSettingsStore(defaults);
+        await store.SaveAsync(defaults, CancellationToken.None);
+        var previousBytes = await File.ReadAllBytesAsync(store.SettingsFilePath);
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(
+            () => store.SaveAsync(defaults with { UdpPort = 0 }, CancellationToken.None));
+
+        CollectionAssert.AreEqual(previousBytes, await File.ReadAllBytesAsync(store.SettingsFilePath));
+        AssertNoTemporaryFiles(directory.Path);
+    }
+
+    [TestMethod]
+    public async Task CompletedOperations_DoNotRetainFileHandles()
+    {
+        using var directory = new TemporaryDirectory();
+        var defaults = CreateOptions(directory.Path);
+        using (var store = new JsonSettingsStore(defaults))
+        {
+            await store.SaveAsync(defaults, CancellationToken.None);
+            _ = await store.LoadAsync(CancellationToken.None);
+        }
+
+        var movedPath = $"{directory.Path}-moved";
+        Directory.Move(directory.Path, movedPath);
+        Directory.Delete(movedPath, recursive: true);
+
+        Assert.IsFalse(Directory.Exists(movedPath));
+        directory.MarkDeleted();
+    }
+
+    private static ApexLabOptions CreateOptions(string dataRootPath)
+    {
+        return new ApexLabOptions(dataRootPath);
+    }
+
+    private static void AssertNoTemporaryFiles(string directoryPath)
+    {
+        Assert.IsEmpty(Directory.GetFiles(directoryPath, ".settings.json.*.tmp"));
+    }
+
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        private bool _deleted;
+
+        public TemporaryDirectory(bool create = true)
+        {
+            Path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(),
+                $"apexlab-settings-tests-{Guid.NewGuid():N}");
+
+            if (create)
+            {
+                Directory.CreateDirectory(Path);
+            }
+        }
+
+        public string Path { get; }
+
+        public void MarkDeleted()
+        {
+            _deleted = true;
+        }
+
+        public void Dispose()
+        {
+            if (!_deleted && Directory.Exists(Path))
+            {
+                Directory.Delete(Path, recursive: true);
+            }
+        }
+    }
+}
