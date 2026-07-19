@@ -1,0 +1,131 @@
+using System.Net;
+using ApexLab.Application.Configuration;
+
+namespace ApexLab.Application.Tests.Configuration;
+
+[TestClass]
+public sealed class ApexLabOptionsTests
+{
+    private static readonly string ValidDataRoot = Path.Combine(
+        Path.GetTempPath(),
+        "apexlab-options-tests",
+        "data");
+
+    [TestMethod]
+    public void Constructor_UsesSafeCaptureDefaults()
+    {
+        var options = new ApexLabOptions(ValidDataRoot);
+
+        Assert.AreEqual(IPAddress.Loopback.ToString(), options.BindAddress);
+        Assert.AreEqual(20777, options.UdpPort);
+        Assert.IsFalse(options.AllowLan);
+        Assert.AreEqual(8, options.LiveSnapshotRateHz);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), options.RawChunkDuration);
+        Assert.IsGreaterThan(0L, options.StorageQuotaBytes);
+    }
+
+    [TestMethod]
+    public void WithExpression_ConfiguresQuotaWithoutMutatingOriginal()
+    {
+        var defaults = new ApexLabOptions(ValidDataRoot);
+        const long configuredQuota = 5L * 1024 * 1024 * 1024;
+
+        var configured = defaults with { StorageQuotaBytes = configuredQuota };
+
+        Assert.AreEqual(configuredQuota, configured.StorageQuotaBytes);
+        Assert.AreNotEqual(configuredQuota, defaults.StorageQuotaBytes);
+    }
+
+    [TestMethod]
+    public void Validate_AcceptsDefaultsAndInclusiveSnapshotRateBounds()
+    {
+        var defaults = new ApexLabOptions(ValidDataRoot);
+        var minimumRate = defaults with { LiveSnapshotRateHz = 1 };
+        var maximumRate = defaults with { LiveSnapshotRateHz = 20 };
+
+        Assert.IsEmpty(ApexLabOptionsValidator.Validate(defaults));
+        Assert.IsEmpty(ApexLabOptionsValidator.Validate(minimumRate));
+        Assert.IsEmpty(ApexLabOptionsValidator.Validate(maximumRate));
+    }
+
+    [TestMethod]
+    public void Validate_ReportsEachInvalidField()
+    {
+        var options = new ApexLabOptions("relative-data-root")
+        {
+            BindAddress = "not-an-ip-address",
+            UdpPort = 0,
+            LiveSnapshotRateHz = 21,
+            RawChunkDuration = TimeSpan.Zero,
+            StorageQuotaBytes = 0,
+        };
+
+        var failures = ApexLabOptionsValidator.Validate(options);
+        var fields = failures.Select(failure => failure.FieldName).ToArray();
+
+        CollectionAssert.AreEquivalent(
+            new[]
+            {
+                nameof(ApexLabOptions.BindAddress),
+                nameof(ApexLabOptions.UdpPort),
+                nameof(ApexLabOptions.LiveSnapshotRateHz),
+                nameof(ApexLabOptions.RawChunkDuration),
+                nameof(ApexLabOptions.DataRootPath),
+                nameof(ApexLabOptions.StorageQuotaBytes),
+            },
+            fields);
+        Assert.IsTrue(failures.All(failure => !string.IsNullOrWhiteSpace(failure.Message)));
+    }
+
+    [TestMethod]
+    public void Validate_RejectsOutOfRangeUdpPorts()
+    {
+        var defaults = new ApexLabOptions(ValidDataRoot);
+
+        AssertHasFailure(defaults with { UdpPort = -1 }, nameof(ApexLabOptions.UdpPort));
+        AssertHasFailure(defaults with { UdpPort = 65_536 }, nameof(ApexLabOptions.UdpPort));
+    }
+
+    [TestMethod]
+    public void Validate_RejectsNonLoopbackAddressWhenLanIsDisabled()
+    {
+        var options = new ApexLabOptions(ValidDataRoot)
+        {
+            BindAddress = "192.0.2.10",
+            AllowLan = false,
+        };
+
+        AssertHasFailure(options, nameof(ApexLabOptions.BindAddress));
+    }
+
+    [TestMethod]
+    public void Validate_AcceptsNonLoopbackAddressWhenLanIsEnabled()
+    {
+        var options = new ApexLabOptions(ValidDataRoot)
+        {
+            BindAddress = "192.0.2.10",
+            AllowLan = true,
+        };
+
+        Assert.IsEmpty(ApexLabOptionsValidator.Validate(options));
+    }
+
+    [TestMethod]
+    public void Validate_RejectsTraversalProneDataRoot()
+    {
+        var root = Path.GetPathRoot(Path.GetFullPath(Path.GetTempPath()));
+        Assert.IsNotNull(root);
+        var options = new ApexLabOptions(Path.Combine(root, "safe", "..", "data"));
+
+        AssertHasFailure(options, nameof(ApexLabOptions.DataRootPath));
+    }
+
+    private static void AssertHasFailure(ApexLabOptions options, string expectedFieldName)
+    {
+        var failures = ApexLabOptionsValidator.Validate(options);
+
+        Assert.IsTrue(
+            failures.Any(failure => failure.FieldName == expectedFieldName),
+            $"Expected a failure for {expectedFieldName}.");
+    }
+}
