@@ -1,0 +1,13 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\ApexLab.Application\ApexLab.Application.csproj" />
+    <ProjectReference Include="..\ApexLab.Domain\ApexLab.Domain.csproj" />
+    <ProjectReference Include="..\ApexLab.Telemetry.Abstractions\ApexLab.Telemetry.Abstractions.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+</Project>
