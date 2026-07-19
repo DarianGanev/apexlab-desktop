@@ -1,12 +1,11 @@
 using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 
 namespace ApexLab.App;
 
 public partial class App : System.Windows.Application
 {
-    private IHost? _host;
+    private AppHostLifetime? _lifetime;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -14,23 +13,42 @@ public partial class App : System.Windows.Application
 
         var localApplicationDataDirectory = Environment.GetFolderPath(
             Environment.SpecialFolder.LocalApplicationData);
-        _host = AppComposition.CreateHost(localApplicationDataDirectory);
-        _host.StartAsync().GetAwaiter().GetResult();
+        var host = AppComposition.CreateHost(localApplicationDataDirectory);
+        var lifetime = new AppHostLifetime(
+            host,
+            services =>
+            {
+                MainWindow = services.GetRequiredService<MainWindow>();
+                MainWindow.Show();
+            });
+        _lifetime = lifetime;
 
-        MainWindow = _host.Services.GetRequiredService<MainWindow>();
-        MainWindow.Show();
+        try
+        {
+            lifetime.Start();
+        }
+        catch
+        {
+            _lifetime = null;
+            throw;
+        }
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
         try
         {
-            _host?.StopAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+            try
+            {
+                _lifetime?.Dispose();
+            }
+            finally
+            {
+                _lifetime = null;
+            }
         }
         finally
         {
-            _host?.Dispose();
-            _host = null;
             base.OnExit(e);
         }
     }

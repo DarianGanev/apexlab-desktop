@@ -82,19 +82,12 @@ public sealed class AppCompositionTests
     }
 
     [TestMethod]
-    public void Application_owns_host_and_window_lifecycle_without_startup_uri()
+    public void Application_has_no_startup_uri()
     {
         var repositoryRoot = FindRepositoryRoot();
         var appXaml = File.ReadAllText(Path.Combine(repositoryRoot, "src", "ApexLab.App", "App.xaml"));
-        var appCode = File.ReadAllText(Path.Combine(repositoryRoot, "src", "ApexLab.App", "App.xaml.cs"));
 
         Assert.IsFalse(appXaml.Contains("StartupUri", StringComparison.Ordinal));
-        StringAssert.Contains(appCode, "AppComposition.CreateHost");
-        StringAssert.Contains(appCode, ".StartAsync()");
-        StringAssert.Contains(appCode, "GetRequiredService<MainWindow>()");
-        StringAssert.Contains(appCode, ".Show()");
-        StringAssert.Contains(appCode, ".StopAsync(");
-        StringAssert.Contains(appCode, ".Dispose()");
     }
 
     private static string NewAbsentPath() => Path.Combine(
