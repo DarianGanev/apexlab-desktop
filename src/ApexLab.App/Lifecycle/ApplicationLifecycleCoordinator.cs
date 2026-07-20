@@ -661,22 +661,26 @@ public sealed class ApplicationLifecycleCoordinator
     private static Task<Exception?> RequestCancellationAsync(
         CancellationTokenSource cancellation,
         Action? completed = null) =>
-        Task.Run<Exception?>(() =>
-        {
-            try
+        Task.Factory.StartNew(
+            () =>
             {
-                cancellation.Cancel();
-                return null;
-            }
-            catch (Exception exception)
-            {
-                return exception;
-            }
-            finally
-            {
-                completed?.Invoke();
-            }
-        });
+                try
+                {
+                    cancellation.Cancel();
+                    return null;
+                }
+                catch (Exception exception)
+                {
+                    return exception;
+                }
+                finally
+                {
+                    completed?.Invoke();
+                }
+            },
+            CancellationToken.None,
+            TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
 
     private TimeSpan Remaining(Stopwatch stopwatch)
     {
