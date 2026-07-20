@@ -240,6 +240,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
         var startupEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancellationEntered = new ManualResetEventSlim(false);
         using var allowCancellation = new ManualResetEventSlim(false);
+        var cancellationUsedThreadPool = false;
         var operations = new RecordingOperations(events)
         {
             ValidateAction = async token =>
@@ -247,6 +248,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
                 var pending = Task.Delay(Timeout.InfiniteTimeSpan, token);
                 using var registration = token.Register(() =>
                 {
+                    cancellationUsedThreadPool = Thread.CurrentThread.IsThreadPoolThread;
                     cancellationEntered.Set();
                     allowCancellation.Wait();
                 });
@@ -274,6 +276,9 @@ public sealed class ApplicationLifecycleCoordinatorTests
             Assert.IsTrue(result.LeaseRetainedForDeferredCleanup);
             Assert.IsFalse(subject.DeferredCleanupCompletion.IsCompleted);
             Assert.DoesNotContain("lease.release", events);
+            Assert.IsFalse(
+                cancellationUsedThreadPool,
+                "Potentially blocking cancellation callbacks must not consume a ThreadPool worker.");
         }
         finally
         {
