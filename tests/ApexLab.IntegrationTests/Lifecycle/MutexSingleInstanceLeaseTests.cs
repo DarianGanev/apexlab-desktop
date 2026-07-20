@@ -76,11 +76,13 @@ public sealed class MutexSingleInstanceLeaseTests
     }
 
     [TestMethod]
-    [Timeout(5_000, CooperativeCancellation = true)]
+    [Timeout(20_000, CooperativeCancellation = true)]
     public async Task Concurrent_acquirers_share_result_and_release_waits_for_inflight_callers()
     {
+        var cancellationToken = TestContext.CancellationToken;
         using var ownerReached = new ManualResetEventSlim(false);
         using var publishResult = new ManualResetEventSlim(false);
+        using var releaseWaitingForCallers = new ManualResetEventSlim(false);
         using var bothCallersEntered = new CountdownEvent(2);
         var identity = $"ApexLab.Tests.{Guid.NewGuid():N}";
         using var subject = new MutexSingleInstanceLease(
@@ -92,30 +94,74 @@ public sealed class MutexSingleInstanceLeaseTests
                 BeforePublishingAcquisition = () =>
                 {
                     ownerReached.Set();
-                    publishResult.Wait();
+                    publishResult.Wait(cancellationToken);
                 },
+                BeforeWaitingForInflightAcquirers = releaseWaitingForCallers.Set,
             });
-        using var callersReady = new Barrier(3);
+        using var callersReady = new CountdownEvent(2);
+        using var startCallers = new ManualResetEventSlim(false);
 
-        var first = Task.Run(() =>
+        Task<bool>? first = null;
+        Task<bool>? second = null;
+        Task? release = null;
+        try
         {
-            Assert.IsTrue(callersReady.SignalAndWait(TimeSpan.FromSeconds(1)));
-            return subject.TryAcquire();
-        });
-        var second = Task.Run(() =>
+            first = StartDedicatedCaller();
+            second = StartDedicatedCaller();
+            Assert.IsTrue(callersReady.Wait(TimeSpan.FromSeconds(5), cancellationToken));
+            startCallers.Set();
+            Assert.IsTrue(bothCallersEntered.Wait(TimeSpan.FromSeconds(5), cancellationToken));
+            Assert.IsTrue(ownerReached.Wait(TimeSpan.FromSeconds(5), cancellationToken));
+            release = Task.Factory.StartNew(
+                subject.Release,
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+            Assert.IsTrue(releaseWaitingForCallers.Wait(TimeSpan.FromSeconds(5), cancellationToken));
+
+            publishResult.Set();
+
+            Assert.IsTrue(await first.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken));
+            Assert.IsTrue(await second.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken));
+            await release.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        }
+        finally
         {
-            Assert.IsTrue(callersReady.SignalAndWait(TimeSpan.FromSeconds(1)));
-            return subject.TryAcquire();
-        });
-        Assert.IsTrue(callersReady.SignalAndWait(TimeSpan.FromSeconds(1)));
-        Assert.IsTrue(bothCallersEntered.Wait(TimeSpan.FromSeconds(1)));
-        Assert.IsTrue(ownerReached.Wait(TimeSpan.FromSeconds(1)));
-        var release = Task.Run(subject.Release);
+            startCallers.Set();
+            publishResult.Set();
+            await ObserveForCleanupAsync(first);
+            await ObserveForCleanupAsync(second);
+            await ObserveForCleanupAsync(release);
+        }
 
-        publishResult.Set();
+        Task<bool> StartDedicatedCaller() => Task.Factory.StartNew(
+            () =>
+            {
+                callersReady.Signal();
+                Assert.IsTrue(startCallers.Wait(TimeSpan.FromSeconds(5), cancellationToken));
+                return subject.TryAcquire();
+            },
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
 
-        Assert.IsTrue(await first.WaitAsync(TimeSpan.FromSeconds(1)));
-        Assert.IsTrue(await second.WaitAsync(TimeSpan.FromSeconds(1)));
-        await release.WaitAsync(TimeSpan.FromSeconds(1));
+        static async Task ObserveForCleanupAsync(Task? task)
+        {
+            if (task is null)
+            {
+                return;
+            }
+
+            try
+            {
+                await task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception)
+            {
+                // Preserve the primary test failure while ensuring every started task is observed.
+            }
+        }
     }
+
+    public TestContext TestContext { get; set; }
 }

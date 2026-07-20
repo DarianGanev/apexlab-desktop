@@ -9,6 +9,7 @@ internal sealed class MutexSingleInstanceLeaseTestHooks
 {
     public Action? AcquirerEntered { get; init; }
     public Action? BeforePublishingAcquisition { get; init; }
+    public Action? BeforeWaitingForInflightAcquirers { get; init; }
 }
 
 public sealed class MutexSingleInstanceLease : ISingleInstanceLease
@@ -109,6 +110,7 @@ public sealed class MutexSingleInstanceLease : ISingleInstanceLease
             _releaseInitiated = true;
             while (_inflightAcquirers != 0)
             {
+                _testHooks?.BeforeWaitingForInflightAcquirers?.Invoke();
                 Monitor.Wait(_gate);
             }
             ownerThread = _ownerThread;
