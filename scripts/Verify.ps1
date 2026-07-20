@@ -126,8 +126,8 @@ function Assert-FixtureSizeBudget {
 
 function Assert-NoGeneratedChanges {
     param(
-        [Parameter(Mandatory)][string[]] $Before,
-        [Parameter(Mandatory)][string[]] $After)
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]] $Before,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]] $After)
 
     if (($Before -join "`n") -ne ($After -join "`n")) {
         throw "Verification changed tracked or untracked repository output."
@@ -161,6 +161,7 @@ function Test-RepositoryCheckFailurePaths {
     [IO.Directory]::CreateDirectory($fixtureRoot) | Out-Null
     try {
         [IO.File]::WriteAllText((Join-Path $fixtureRoot "conflict.txt"), ("<" * 7) + " HEAD")
+        Assert-NoGeneratedChanges -Before @() -After @()
         Assert-CheckRejects `
             -Name "conflict markers" `
             -ExpectedMessagePattern '^Conflict marker found' `
