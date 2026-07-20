@@ -1,4 +1,5 @@
 using System.Windows;
+using ApexLab.App.CommandLine;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace ApexLab.App;
@@ -11,6 +12,18 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
+        var coordinator = new AppStartupCoordinator(
+            arguments => new SmokeTestRunner().RunAsync(arguments).GetAwaiter().GetResult(),
+            StartInteractiveShell);
+        var exitCode = coordinator.Start(e.Args);
+        if (exitCode.HasValue)
+        {
+            ExitWithoutWindow(exitCode.Value);
+        }
+    }
+
+    private void StartInteractiveShell()
+    {
         var localApplicationDataDirectory = Environment.GetFolderPath(
             Environment.SpecialFolder.LocalApplicationData);
         var host = AppComposition.CreateHost(localApplicationDataDirectory);
@@ -51,5 +64,11 @@ public partial class App : System.Windows.Application
         {
             base.OnExit(e);
         }
+    }
+
+    private void ExitWithoutWindow(int exitCode)
+    {
+        Environment.ExitCode = exitCode;
+        Shutdown(exitCode);
     }
 }

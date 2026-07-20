@@ -6,7 +6,10 @@ This is a personal software-engineering diploma project, not a startup MVP. Its 
 
 ## Status
 
-The approved architecture and implementation roadmap are complete. The executable Windows foundation is the next milestone.
+The native Windows foundation is executable and tested: it includes the WPF shell, validated local
+settings, single-instance lifecycle coordination, safe SQLite schema migration, headless package
+smoke testing, and reproducible verification/packaging scripts. F1 telemetry product features are
+the next milestone.
 
 - [Product and engineering design](docs/superpowers/specs/2026-07-19-apexlab-desktop-design.md)
 - [30-week roadmap](docs/apexlab-roadmap.md)
@@ -35,17 +38,41 @@ The coach is deterministic and evidence-first. It must abstain when data quality
 
 There is no mobile/web client, backend, account system, smartwatch, IoT device, game injection, in-game overlay, or cloud dependency in version 1.0.
 
-## Planned development commands
+## Build and verification
 
-After the v0.1.0 solution is scaffolded with the pinned .NET 10 SDK:
+Prerequisites are Windows 11 x64, PowerShell 5.1 or newer, and the .NET SDK version pinned in
+`global.json` (currently 10.0.302). Restore remains locked to committed NuGet graphs.
 
 ```powershell
-dotnet restore ApexLab.slnx --locked-mode
-dotnet format ApexLab.slnx --verify-no-changes
-dotnet build ApexLab.slnx -c Release --no-restore
-dotnet test ApexLab.slnx -c Release --no-build
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Verify.ps1
 ```
+
+Verification performs the SDK pin check, locked restore, formatting check, warnings-as-errors
+Release build, non-soak tests, TRX/Cobertura output, and repository hygiene checks. Generated test
+evidence is written below ignored `artifacts/test-results`.
+
+Run the desktop shell from source with:
+
+```powershell
+dotnet run --project src/ApexLab.App/ApexLab.App.csproj -c Release
+```
+
+## Package and smoke test
+
+Create a guarded self-contained Windows package and verify the extracted executable:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish.ps1 -Version 0.1.0 -CleanKnownOutputs
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/SmokeTest.ps1 -PackagePath artifacts/ApexLab-0.1.0-win-x64.zip
+```
+
+The publish script refuses silent overwrites, verifies `Version.props`, includes the README and
+third-party notices, and writes `ApexLab-0.1.0-win-x64.zip.sha256`. The smoke script extracts to new
+temporary storage, launches no window, enforces an exact-PID timeout, initializes real settings and
+SQLite schema version 1, validates the result, and proves the temporary tree can be removed.
+
+The package is currently unsigned and may show a Windows reputation/SmartScreen warning. It is a
+portable ZIP, not an installer. See the [v0.1.0 verification record](docs/verification/v0.1.0.md).
 
 ## Repository policy
 

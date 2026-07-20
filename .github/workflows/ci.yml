@@ -9,12 +9,20 @@ on:
     branches:
       - develop
       - main
+      - "release/**"
+    tags:
+      - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  verify:
+  verify-package:
     runs-on: windows-latest
     steps:
       - name: Check out repository
@@ -27,6 +35,56 @@ jobs:
           cache: true
           cache-dependency-path: "**/packages.lock.json"
 
+      - name: Read and validate version
+        id: version
+        shell: powershell
+        run: |
+          [xml] $versionDocument = Get-Content -Raw -LiteralPath "Version.props"
+          $version = [string] $versionDocument.Project.PropertyGroup.VersionPrefix
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Version.props contains an invalid VersionPrefix '$version'."
+          }
+          if ($env:GITHUB_REF -like 'refs/tags/*') {
+            $expectedTag = "v$version"
+            $actualTag = $env:GITHUB_REF.Substring('refs/tags/'.Length)
+            if ($actualTag -ne $expectedTag) {
+              throw "Tag '$actualTag' must match Version.props ('$expectedTag')."
+            }
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "APEXLAB_VERSION=$version" >> $env:GITHUB_ENV
+
       - name: Verify solution
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Verify.ps1
+
+      - name: Publish Windows package
+        shell: powershell
+        run: >-
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish.ps1
+          -Version $env:APEXLAB_VERSION -CleanKnownOutputs
+
+      - name: Smoke-test Windows package
+        shell: powershell
+        run: >-
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/SmokeTest.ps1
+          -PackagePath "artifacts/ApexLab-$env:APEXLAB_VERSION-win-x64.zip"
+
+      - name: Upload test results and coverage
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: apexlab-test-results-${{ github.run_id }}
+          path: artifacts/test-results
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Windows package and checksum
+        uses: actions/upload-artifact@v6
+        with:
+          name: apexlab-v0.1.0-win-x64
+          path: |
+            artifacts/ApexLab-0.1.0-win-x64.zip
+            artifacts/ApexLab-0.1.0-win-x64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
