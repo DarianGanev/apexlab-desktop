@@ -38,6 +38,19 @@ function Assert-PathIgnored {
         [IO.Path]::AltDirectorySeparatorChar)
     $resolvedPath = [IO.Path]::GetFullPath($Path)
     $relativePath = $resolvedPath.Substring($resolvedRepository.Length + 1)
+    $currentPath = $resolvedRepository
+    foreach ($segment in $relativePath.Split(
+        [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar),
+        [StringSplitOptions]::RemoveEmptyEntries)) {
+        $currentPath = Join-Path $currentPath $segment
+        if ([IO.Directory]::Exists($currentPath) -or [IO.File]::Exists($currentPath)) {
+            $item = Get-Item -Force -LiteralPath $currentPath
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Release cleanup path contains a filesystem reparse point: $currentPath"
+            }
+        }
+    }
+
     $trackedEntries = @(& git -C $repositoryRoot ls-files -- $relativePath)
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to inspect the Git tracking state of release cleanup target: $resolvedPath"
