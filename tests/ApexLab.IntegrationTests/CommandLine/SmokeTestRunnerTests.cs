@@ -77,6 +77,64 @@ public sealed class SmokeTestRunnerTests
     }
 
     [TestMethod]
+    public async Task ExistingDataRoot_ReturnsThreeWithoutModifyingCallerData()
+    {
+        using var fixture = SmokeTestFixture.Create();
+        Directory.CreateDirectory(fixture.DataRoot);
+        var sentinelPath = Path.Combine(fixture.DataRoot, "keep.txt");
+        await File.WriteAllTextAsync(sentinelPath, "caller-owned", TestContext.CancellationToken);
+        var subject = new SmokeTestRunner(TimeSpan.FromSeconds(5));
+
+        var exitCode = await subject.RunAsync(
+            fixture.Arguments,
+            TestContext.CancellationToken);
+
+        Assert.AreEqual((int)SmokeTestExitCode.InitializationFailure, exitCode);
+        Assert.AreEqual(
+            "caller-owned",
+            await File.ReadAllTextAsync(sentinelPath, TestContext.CancellationToken));
+        Assert.HasCount(1, Directory.GetFileSystemEntries(fixture.DataRoot));
+        Assert.IsFalse(File.Exists(fixture.ResultFile));
+    }
+
+    [TestMethod]
+    public async Task ExistingResultFile_ReturnsThreeBeforeCreatingDataRoot()
+    {
+        using var fixture = SmokeTestFixture.Create();
+        Directory.CreateDirectory(Path.GetDirectoryName(fixture.ResultFile)!);
+        await File.WriteAllTextAsync(
+            fixture.ResultFile,
+            "caller-owned",
+            TestContext.CancellationToken);
+        var subject = new SmokeTestRunner(TimeSpan.FromSeconds(5));
+
+        var exitCode = await subject.RunAsync(
+            fixture.Arguments,
+            TestContext.CancellationToken);
+
+        Assert.AreEqual((int)SmokeTestExitCode.InitializationFailure, exitCode);
+        Assert.AreEqual(
+            "caller-owned",
+            await File.ReadAllTextAsync(fixture.ResultFile, TestContext.CancellationToken));
+        Assert.IsFalse(Directory.Exists(fixture.DataRoot));
+    }
+
+    [TestMethod]
+    public async Task AlreadyCancelledCaller_LeavesNoOutput()
+    {
+        using var fixture = SmokeTestFixture.Create();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var subject = new SmokeTestRunner(TimeSpan.FromSeconds(5));
+
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(
+            () => subject.RunAsync(fixture.Arguments, cancellation.Token));
+
+        Assert.IsFalse(Directory.Exists(fixture.DataRoot));
+        Assert.IsFalse(File.Exists(fixture.ResultFile));
+    }
+
+    [TestMethod]
     [Timeout(10_000, CooperativeCancellation = true)]
     public async Task InitializationTimeout_ReturnsFourAndDoesNotLeaveResult()
     {

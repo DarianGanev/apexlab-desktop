@@ -12,20 +12,18 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
-        var arguments = StartupArguments.Parse(e.Args);
-        if (!arguments.IsSuccess)
+        var coordinator = new AppStartupCoordinator(
+            arguments => new SmokeTestRunner().RunAsync(arguments).GetAwaiter().GetResult(),
+            StartInteractiveShell);
+        var exitCode = coordinator.Start(e.Args);
+        if (exitCode.HasValue)
         {
-            ExitWithoutWindow((int)SmokeTestExitCode.InvalidArguments);
-            return;
+            ExitWithoutWindow(exitCode.Value);
         }
+    }
 
-        if (arguments.Value!.Mode == StartupMode.SmokeTest)
-        {
-            var exitCode = new SmokeTestRunner().RunAsync(e.Args).GetAwaiter().GetResult();
-            ExitWithoutWindow(exitCode);
-            return;
-        }
-
+    private void StartInteractiveShell()
+    {
         var localApplicationDataDirectory = Environment.GetFolderPath(
             Environment.SpecialFolder.LocalApplicationData);
         var host = AppComposition.CreateHost(localApplicationDataDirectory);

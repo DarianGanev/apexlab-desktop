@@ -87,6 +87,21 @@ public sealed class SmokeTestRunner
         {
             return (int)SmokeTestExitCode.Timeout;
         }
+        catch (Exception exception) when (
+            timeoutCancellation.IsCancellationRequested
+            && !cancellationToken.IsCancellationRequested
+            && ContainsCancellation(exception))
+        {
+            return (int)SmokeTestExitCode.Timeout;
+        }
+        catch (Exception exception) when (
+            cancellationToken.IsCancellationRequested && ContainsCancellation(exception))
+        {
+            throw new OperationCanceledException(
+                "Smoke-test execution was cancelled.",
+                exception,
+                cancellationToken);
+        }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
             return (int)SmokeTestExitCode.InitializationFailure;
@@ -100,30 +115,61 @@ public sealed class SmokeTestRunner
         var dataRoot = arguments.DataRoot!;
         var resultFile = arguments.ResultFile!;
         var paths = ApplicationPaths.FromRoot(dataRoot);
-        Directory.CreateDirectory(paths.RootDirectory);
-
-        var defaults = new ApexLabOptions(paths.RootDirectory);
-        using (var settingsStore = new JsonSettingsStore(defaults))
+        cancellationToken.ThrowIfCancellationRequested();
+        if (Directory.Exists(paths.RootDirectory) || File.Exists(paths.RootDirectory))
         {
-            await settingsStore.SaveAsync(defaults, cancellationToken).ConfigureAwait(false);
-            var loaded = await settingsStore.LoadAsync(cancellationToken).ConfigureAwait(false);
-            if (ApexLabOptionsValidator.Validate(loaded).Count != 0)
-            {
-                throw new InvalidOperationException("Smoke-test settings validation failed.");
-            }
+            throw new IOException("Smoke-test data root must not already exist.");
         }
 
-        var migrator = new DatabaseMigrator(new SqliteConnectionFactory(paths.DatabaseFile));
-        await migrator.MigrateAsync(cancellationToken).ConfigureAwait(false);
-        cancellationToken.ThrowIfCancellationRequested();
+        if (File.Exists(resultFile) || Directory.Exists(resultFile))
+        {
+            throw new IOException("Smoke-test result path must not already exist.");
+        }
 
-        var result = new SmokeTestResult(
-            ApexLabIdentity.ProductName,
-            ApexLabIdentity.InformationalVersion,
-            DatabaseSchema.CurrentVersion,
-            SettingsValid: true,
-            SmokeTestCompletionState.Completed);
-        await WriteResultAtomicallyAsync(resultFile, result, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        Directory.CreateDirectory(paths.RootDirectory);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var defaults = new ApexLabOptions(paths.RootDirectory);
+            using (var settingsStore = new JsonSettingsStore(defaults))
+            {
+                await settingsStore.SaveAsync(defaults, cancellationToken).ConfigureAwait(false);
+                var loaded = await settingsStore.LoadAsync(cancellationToken).ConfigureAwait(false);
+                if (ApexLabOptionsValidator.Validate(loaded).Count != 0)
+                {
+                    throw new InvalidOperationException("Smoke-test settings validation failed.");
+                }
+            }
+
+            var migrator = new DatabaseMigrator(new SqliteConnectionFactory(paths.DatabaseFile));
+            await migrator.MigrateAsync(cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var result = new SmokeTestResult(
+                ApexLabIdentity.ProductName,
+                ApexLabIdentity.InformationalVersion,
+                DatabaseSchema.CurrentVersion,
+                SettingsValid: true,
+                SmokeTestCompletionState.Completed);
+            await WriteResultAtomicallyAsync(resultFile, result, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception primaryException)
+        {
+            try
+            {
+                Directory.Delete(paths.RootDirectory, recursive: true);
+            }
+            catch (Exception cleanupException)
+            {
+                throw new AggregateException(
+                    "Smoke-test initialization and owned-root cleanup both failed.",
+                    primaryException,
+                    cleanupException);
+            }
+
+            throw;
+        }
     }
 
     private static async Task WriteResultAtomicallyAsync(
@@ -158,13 +204,36 @@ public sealed class SmokeTestRunner
             cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporaryFile, resultFile, overwrite: false);
         }
-        finally
+        catch (Exception primaryException)
         {
-            if (File.Exists(temporaryFile))
+            try
             {
-                File.Delete(temporaryFile);
+                if (File.Exists(temporaryFile))
+                {
+                    File.Delete(temporaryFile);
+                }
             }
+            catch (Exception cleanupException)
+            {
+                throw new AggregateException(
+                    "Smoke-test result write and temporary-file cleanup both failed.",
+                    primaryException,
+                    cleanupException);
+            }
+
+            throw;
         }
+    }
+
+    private static bool ContainsCancellation(Exception exception)
+    {
+        if (exception is OperationCanceledException)
+        {
+            return true;
+        }
+
+        return exception is AggregateException aggregate
+            && aggregate.Flatten().InnerExceptions.Any(ContainsCancellation);
     }
 }
 
