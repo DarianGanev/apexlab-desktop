@@ -108,7 +108,7 @@ public sealed class SmokeTestRunner
         }
     }
 
-    private static async Task InitializeAsync(
+    private async Task InitializeAsync(
         StartupArguments arguments,
         CancellationToken cancellationToken)
     {
@@ -131,6 +131,9 @@ public sealed class SmokeTestRunner
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+            await _hooks.AfterDataRootCreatedAsync(
+                paths.RootDirectory,
+                cancellationToken).ConfigureAwait(false);
             var defaults = new ApexLabOptions(paths.RootDirectory);
             using (var settingsStore = new JsonSettingsStore(defaults))
             {
@@ -172,18 +175,22 @@ public sealed class SmokeTestRunner
         }
     }
 
-    private static async Task WriteResultAtomicallyAsync(
+    private async Task WriteResultAtomicallyAsync(
         string resultFile,
         SmokeTestResult result,
         CancellationToken cancellationToken)
     {
         var resultDirectory = Path.GetDirectoryName(resultFile)!;
+        var ownsResultDirectory = !Directory.Exists(resultDirectory);
         Directory.CreateDirectory(resultDirectory);
         var temporaryFile = Path.Combine(
             resultDirectory,
             $".{Path.GetFileName(resultFile)}.{Guid.NewGuid():N}.tmp");
         try
         {
+            await _hooks.AfterResultDirectoryCreatedAsync(
+                resultDirectory,
+                cancellationToken).ConfigureAwait(false);
             await using (var stream = new FileStream(
                 temporaryFile,
                 FileMode.CreateNew,
@@ -206,6 +213,7 @@ public sealed class SmokeTestRunner
         }
         catch (Exception primaryException)
         {
+            var cleanupFailures = new List<Exception>();
             try
             {
                 if (File.Exists(temporaryFile))
@@ -215,10 +223,26 @@ public sealed class SmokeTestRunner
             }
             catch (Exception cleanupException)
             {
+                cleanupFailures.Add(cleanupException);
+            }
+
+            try
+            {
+                if (ownsResultDirectory && Directory.Exists(resultDirectory))
+                {
+                    Directory.Delete(resultDirectory, recursive: false);
+                }
+            }
+            catch (Exception cleanupException)
+            {
+                cleanupFailures.Add(cleanupException);
+            }
+
+            if (cleanupFailures.Count != 0)
+            {
                 throw new AggregateException(
-                    "Smoke-test result write and temporary-file cleanup both failed.",
-                    primaryException,
-                    cleanupException);
+                    "Smoke-test result write and owned-output cleanup both failed.",
+                    cleanupFailures.Prepend(primaryException));
             }
 
             throw;
@@ -243,4 +267,10 @@ internal sealed class SmokeTestRunnerHooks
 
     internal Func<CancellationToken, ValueTask> BeforeInitializationAsync { get; init; } =
         static _ => ValueTask.CompletedTask;
+
+    internal Func<string, CancellationToken, ValueTask> AfterDataRootCreatedAsync { get; init; } =
+        static (_, _) => ValueTask.CompletedTask;
+
+    internal Func<string, CancellationToken, ValueTask> AfterResultDirectoryCreatedAsync { get; init; } =
+        static (_, _) => ValueTask.CompletedTask;
 }

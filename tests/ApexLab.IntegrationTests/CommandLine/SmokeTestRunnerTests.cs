@@ -135,6 +135,52 @@ public sealed class SmokeTestRunnerTests
     }
 
     [TestMethod]
+    public async Task CallerCancellationAfterRootCreation_RemovesOwnedRoot()
+    {
+        using var fixture = SmokeTestFixture.Create();
+        using var cancellation = new CancellationTokenSource();
+        var subject = new SmokeTestRunner(
+            TimeSpan.FromSeconds(5),
+            new SmokeTestRunnerHooks
+            {
+                AfterDataRootCreatedAsync = (_, linkedToken) =>
+                {
+                    cancellation.Cancel();
+                    return ValueTask.FromCanceled(linkedToken);
+                },
+            });
+
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(
+            () => subject.RunAsync(fixture.Arguments, cancellation.Token));
+
+        Assert.IsFalse(Directory.Exists(fixture.DataRoot));
+        Assert.IsFalse(File.Exists(fixture.ResultFile));
+    }
+
+    [TestMethod]
+    public async Task ResultFailure_RemovesOwnedDataAndResultDirectories()
+    {
+        using var fixture = SmokeTestFixture.Create();
+        var resultDirectory = Path.GetDirectoryName(fixture.ResultFile)!;
+        var subject = new SmokeTestRunner(
+            TimeSpan.FromSeconds(5),
+            new SmokeTestRunnerHooks
+            {
+                AfterResultDirectoryCreatedAsync = static (_, _) =>
+                    ValueTask.FromException(new IOException("Forced result failure.")),
+            });
+
+        var exitCode = await subject.RunAsync(
+            fixture.Arguments,
+            TestContext.CancellationToken);
+
+        Assert.AreEqual((int)SmokeTestExitCode.InitializationFailure, exitCode);
+        Assert.IsFalse(Directory.Exists(fixture.DataRoot));
+        Assert.IsFalse(Directory.Exists(resultDirectory));
+        Assert.IsFalse(File.Exists(fixture.ResultFile));
+    }
+
+    [TestMethod]
     [Timeout(10_000, CooperativeCancellation = true)]
     public async Task InitializationTimeout_ReturnsFourAndDoesNotLeaveResult()
     {
