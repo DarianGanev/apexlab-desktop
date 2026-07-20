@@ -439,12 +439,24 @@ public sealed class ApplicationLifecycleCoordinatorTests
     {
         var events = new List<string>();
         using var blocker = new ManualResetEventSlim(false);
+        using var coordinationEntered = new ManualResetEventSlim(false);
+        var coordinationUsedThreadPool = true;
         var operations = new RecordingOperations(events)
         {
             StopAction = _ => { blocker.Wait(); return Task.CompletedTask; },
         };
         var subject = new ApplicationLifecycleCoordinator(
-            new RecordingLease(events, available: true), operations, TimeSpan.FromMilliseconds(75));
+            new RecordingLease(events, available: true),
+            operations,
+            TimeSpan.FromMilliseconds(75),
+            new ApplicationLifecycleTestHooks
+            {
+                StopCoordinationStarted = () =>
+                {
+                    coordinationUsedThreadPool = Thread.CurrentThread.IsThreadPoolThread;
+                    coordinationEntered.Set();
+                },
+            });
         await subject.StartAsync();
 
         try
@@ -458,6 +470,10 @@ public sealed class ApplicationLifecycleCoordinatorTests
             var result = await stopTask.WaitAsync(TimeSpan.FromMilliseconds(500));
             Assert.AreEqual(LifecycleStopOutcome.Interrupted, result.Outcome);
             Assert.IsTrue(result.LeaseRetainedForDeferredCleanup);
+            Assert.IsTrue(coordinationEntered.Wait(TimeSpan.FromSeconds(5)));
+            Assert.IsFalse(
+                coordinationUsedThreadPool,
+                "Stop coordination must remain schedulable when a lifecycle operation blocks the ThreadPool.");
         }
         finally
         {

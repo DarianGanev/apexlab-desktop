@@ -27,6 +27,7 @@ internal sealed class ApplicationLifecycleTestHooks
 {
     public Action? BeforeStartPublication { get; init; }
     public Action? DeferredCleanupComposed { get; init; }
+    public Action? StopCoordinationStarted { get; init; }
 }
 
 public sealed class ApplicationLifecycleCoordinator
@@ -263,8 +264,12 @@ public sealed class ApplicationLifecycleCoordinator
     {
         try
         {
-            var result = await Task.Run(
-                    () => StopCoreAsync(startTask, startupCancellationRequest, stopwatch))
+            var result = await Task.Factory.StartNew(
+                    () => StopCoreAsync(startTask, startupCancellationRequest, stopwatch),
+                    CancellationToken.None,
+                    TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default)
+                .Unwrap()
                 .ConfigureAwait(false);
             completion.TrySetResult(result);
         }
@@ -279,6 +284,7 @@ public sealed class ApplicationLifecycleCoordinator
         Task<Exception?> startupCancellationRequest,
         Stopwatch stopwatch)
     {
+        _testHooks?.StopCoordinationStarted?.Invoke();
         var failures = new List<Exception>();
         try
         {
