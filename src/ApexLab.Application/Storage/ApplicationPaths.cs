@@ -146,7 +146,7 @@ public sealed record ApplicationPaths
 
             if (OperatingSystem.IsWindows()
                 && !(index == 0 && IsWindowsDriveDesignator(segment))
-                && IsUnsafeWindowsSegment(segment))
+                && !WindowsPathSegment.IsSafe(segment))
             {
                 return true;
             }
@@ -162,36 +162,4 @@ public sealed record ApplicationPaths
             && segment[1] == Path.VolumeSeparatorChar;
     }
 
-    private static bool IsUnsafeWindowsSegment(string segment)
-    {
-        if (segment[^1] is ' ' or '.'
-            || segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
-        {
-            return true;
-        }
-
-        var firstPeriodIndex = segment.IndexOf('.');
-        var baseName = firstPeriodIndex >= 0
-            ? segment[..firstPeriodIndex]
-            : segment;
-
-        if (baseName.EndsWith(' ')
-            || baseName.Equals("CON", StringComparison.OrdinalIgnoreCase)
-            || baseName.Equals("PRN", StringComparison.OrdinalIgnoreCase)
-            || baseName.Equals("AUX", StringComparison.OrdinalIgnoreCase)
-            || baseName.Equals("NUL", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return baseName.Length == 4
-            && IsWindowsReservedDeviceDigit(baseName[3])
-            && (baseName.StartsWith("COM", StringComparison.OrdinalIgnoreCase)
-                || baseName.StartsWith("LPT", StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static bool IsWindowsReservedDeviceDigit(char value)
-    {
-        return value is >= '1' and <= '9' or '\u00B9' or '\u00B2' or '\u00B3';
-    }
 }
