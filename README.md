@@ -14,6 +14,7 @@ the next milestone.
 - [Product and engineering design](docs/superpowers/specs/2026-07-19-apexlab-desktop-design.md)
 - [30-week roadmap](docs/apexlab-roadmap.md)
 - [v0.1.0 implementation plan](docs/superpowers/plans/2026-07-19-apexlab-v0.1-foundation.md)
+- [Changelog](CHANGELOG.md)
 
 ## Central product loop
 
