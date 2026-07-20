@@ -38,7 +38,15 @@ function Assert-PathIgnored {
         [IO.Path]::AltDirectorySeparatorChar)
     $resolvedPath = [IO.Path]::GetFullPath($Path)
     $relativePath = $resolvedPath.Substring($resolvedRepository.Length + 1)
-    & git -C $repositoryRoot check-ignore --quiet --no-index -- $relativePath
+    $trackedEntries = @(& git -C $repositoryRoot ls-files -- $relativePath)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to inspect the Git tracking state of release cleanup target: $resolvedPath"
+    }
+    if ($trackedEntries.Count -ne 0) {
+        throw "Release cleanup target contains tracked repository content: $resolvedPath"
+    }
+
+    & git -C $repositoryRoot check-ignore --quiet -- $relativePath
     if ($LASTEXITCODE -ne 0) {
         throw "Release cleanup target is not ignored by Git: $resolvedPath"
     }
