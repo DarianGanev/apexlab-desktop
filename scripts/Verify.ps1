@@ -63,17 +63,30 @@ function Assert-NoSecretPatterns {
         [Parameter(Mandatory)][string[]] $RelativePaths)
 
     $patterns = @(
-        ("AK" + "IA[0-9A-Z]{16}"),
-        ("gh" + "[pousr]_[A-Za-z0-9]{36,}"),
-        ("-----BEGIN " + "(RSA |EC |OPENSSH )?PRIVATE KEY-----")
+        [pscustomobject]@{
+            Name = "AWS access key"
+            Pattern = ("AK" + "IA[0-9A-Z]{16}")
+        },
+        [pscustomobject]@{
+            Name = "GitHub legacy token"
+            Pattern = ("gh" + "[pousr]_[A-Za-z0-9]{36,}")
+        },
+        [pscustomobject]@{
+            Name = "GitHub fine-grained token"
+            Pattern = ("github" + "_pat_[A-Za-z0-9_]{20,}")
+        },
+        [pscustomobject]@{
+            Name = "private key"
+            Pattern = ("-----BEGIN " + "(RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----")
+        }
     )
     foreach ($relativePath in $RelativePaths) {
         $path = Join-Path $Root $relativePath
         $lines = Get-TextLines -Path $path
         if ($null -eq $lines) { continue }
         foreach ($pattern in $patterns) {
-            if (($lines -join "`n") -match $pattern) {
-                throw "Potential secret pattern found in $relativePath."
+            if (($lines -join "`n") -match $pattern.Pattern) {
+                throw "Potential $($pattern.Name) credential pattern found in $relativePath."
             }
         }
     }
@@ -124,18 +137,22 @@ function Assert-NoGeneratedChanges {
 function Assert-CheckRejects {
     param(
         [Parameter(Mandatory)][string] $Name,
+        [Parameter(Mandatory)][string] $ExpectedMessagePattern,
         [Parameter(Mandatory)][scriptblock] $Check)
 
-    $rejected = $false
+    $rejection = $null
     try {
         & $Check
     }
     catch {
-        $rejected = $true
+        $rejection = $_
     }
 
-    if (!$rejected) {
+    if ($null -eq $rejection) {
         throw "Repository check '$Name' did not reject its intentionally failing fixture."
+    }
+    if ($rejection.Exception.Message -notmatch $ExpectedMessagePattern) {
+        throw "Repository check '$Name' failed for the wrong reason: $($rejection.Exception.Message)"
     }
 }
 
@@ -144,20 +161,55 @@ function Test-RepositoryCheckFailurePaths {
     [IO.Directory]::CreateDirectory($fixtureRoot) | Out-Null
     try {
         [IO.File]::WriteAllText((Join-Path $fixtureRoot "conflict.txt"), ("<" * 7) + " HEAD")
-        Assert-CheckRejects -Name "conflict markers" -Check {
+        Assert-CheckRejects `
+            -Name "conflict markers" `
+            -ExpectedMessagePattern '^Conflict marker found' `
+            -Check {
             Assert-NoConflictMarkers -Root $fixtureRoot -RelativePaths @("conflict.txt")
         }
 
-        [IO.File]::WriteAllText(
-            (Join-Path $fixtureRoot "secret.txt"),
-            ("AK" + "IA" + ("A" * 16)))
-        Assert-CheckRejects -Name "secret patterns" -Check {
-            Assert-NoSecretPatterns -Root $fixtureRoot -RelativePaths @("secret.txt")
+        $credentialFixtures = @(
+            [pscustomobject]@{
+                Name = "AWS access key"
+                File = "aws-secret.txt"
+                Value = ("AK" + "IA" + ("A" * 16))
+            },
+            [pscustomobject]@{
+                Name = "GitHub legacy token"
+                File = "github-legacy-secret.txt"
+                Value = ("gh" + "p_" + ("a" * 36))
+            },
+            [pscustomobject]@{
+                Name = "GitHub fine-grained token"
+                File = "github-fine-grained-secret.txt"
+                Value = ("github" + "_pat_" + ("a" * 32))
+            },
+            [pscustomobject]@{
+                Name = "private key"
+                File = "private-key.txt"
+                Value = ("-----BEGIN " + "ENCRYPTED PRIVATE KEY-----")
+            }
+        )
+        foreach ($credentialFixture in $credentialFixtures) {
+            [IO.File]::WriteAllText(
+                (Join-Path $fixtureRoot $credentialFixture.File),
+                $credentialFixture.Value)
+            Assert-CheckRejects `
+                -Name $credentialFixture.Name `
+                -ExpectedMessagePattern ("^Potential " + [regex]::Escape($credentialFixture.Name)) `
+                -Check {
+                Assert-NoSecretPatterns `
+                    -Root $fixtureRoot `
+                    -RelativePaths @($credentialFixture.File)
+            }
         }
 
         [IO.Directory]::CreateDirectory((Join-Path $fixtureRoot "data")) | Out-Null
         [IO.File]::WriteAllText((Join-Path $fixtureRoot "data\private.txt"), "private")
-        Assert-CheckRejects -Name "personal data" -Check {
+        Assert-CheckRejects `
+            -Name "personal data" `
+            -ExpectedMessagePattern '^Personal-data directory is tracked' `
+            -Check {
             Assert-NoPersonalDataDirectories -RelativePaths @("data/private.txt")
         }
 
@@ -166,14 +218,20 @@ function Test-RepositoryCheckFailurePaths {
         $largeFixture = Join-Path $largeFixtureDirectory "large.bin"
         $stream = [IO.File]::Open($largeFixture, [IO.FileMode]::CreateNew)
         try { $stream.SetLength($maximumFixtureBytes + 1) } finally { $stream.Dispose() }
-        Assert-CheckRejects -Name "fixture size" -Check {
+        Assert-CheckRejects `
+            -Name "fixture size" `
+            -ExpectedMessagePattern '^Fixture exceeds' `
+            -Check {
             Assert-FixtureSizeBudget `
                 -Root $fixtureRoot `
                 -RelativePaths @("tests/Fixtures/large.bin") `
                 -MaximumBytes $maximumFixtureBytes
         }
 
-        Assert-CheckRejects -Name "generated changes" -Check {
+        Assert-CheckRejects `
+            -Name "generated changes" `
+            -ExpectedMessagePattern '^Verification changed' `
+            -Check {
             Assert-NoGeneratedChanges -Before @("before") -After @("after")
         }
     }

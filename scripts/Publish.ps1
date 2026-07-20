@@ -29,10 +29,25 @@ function Assert-PathBelowArtifacts {
     }
 }
 
-function Remove-KnownOutput {
+function Assert-PathIgnored {
     param([Parameter(Mandatory)][string] $Path)
 
     Assert-PathBelowArtifacts -Path $Path
+    $resolvedRepository = [IO.Path]::GetFullPath($repositoryRoot).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+    $resolvedPath = [IO.Path]::GetFullPath($Path)
+    $relativePath = $resolvedPath.Substring($resolvedRepository.Length + 1)
+    & git -C $repositoryRoot check-ignore --quiet --no-index -- $relativePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Release cleanup target is not ignored by Git: $resolvedPath"
+    }
+}
+
+function Remove-KnownOutput {
+    param([Parameter(Mandatory)][string] $Path)
+
+    Assert-PathIgnored -Path $Path
     if ([IO.Directory]::Exists($Path)) {
         [IO.Directory]::Delete($Path, $true)
     }
@@ -108,10 +123,18 @@ try {
     }
 }
 catch {
-    if (![IO.File]::Exists($packagePath) -and ![IO.File]::Exists($checksumPath)) {
-        Remove-KnownOutput -Path $publishDirectory
+    $primaryError = $_
+    try {
+        if (![IO.File]::Exists($packagePath) -and ![IO.File]::Exists($checksumPath)) {
+            Remove-KnownOutput -Path $publishDirectory
+        }
     }
-    throw
+    catch {
+        throw [AggregateException]::new(
+            "Release creation and cleanup both failed.",
+            [Exception[]]@($primaryError.Exception, $_.Exception))
+    }
+    throw $primaryError
 }
 finally {
     Pop-Location
