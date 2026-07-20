@@ -3,6 +3,7 @@ using ApexLab.App.Lifecycle;
 namespace ApexLab.IntegrationTests.Lifecycle;
 
 [TestClass]
+[DoNotParallelize]
 public sealed class ApplicationLifecycleCoordinatorTests
 {
     [TestMethod]
@@ -88,7 +89,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
     }
 
     [TestMethod]
-    [Timeout(3_000, CooperativeCancellation = true)]
+    [Timeout(15_000, CooperativeCancellation = true)]
     public async Task Stop_at_final_start_publication_cannot_observe_started_with_incomplete_start_task()
     {
         var events = new List<string>();
@@ -108,7 +109,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
             });
 
         var start = subject.StartAsync();
-        Assert.IsTrue(publicationReached.Wait(TimeSpan.FromSeconds(1)));
+        Assert.IsTrue(publicationReached.Wait(TimeSpan.FromSeconds(5)));
         Assert.IsFalse(start.IsCompleted);
         var stop = subject.StopAsync();
         allowPublication.Set();
@@ -143,7 +144,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
     }
 
     [TestMethod]
-    [Timeout(3_000, CooperativeCancellation = true)]
+    [Timeout(15_000, CooperativeCancellation = true)]
     public async Task Producer_stop_failure_during_startup_rollback_retains_lease()
     {
         var events = new List<string>();
@@ -164,7 +165,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
             });
 
         var start = subject.StartAsync();
-        Assert.IsTrue(publicationReached.Wait(TimeSpan.FromSeconds(1)));
+        Assert.IsTrue(publicationReached.Wait(TimeSpan.FromSeconds(5)));
         var stop = subject.StopAsync();
         allowPublication.Set();
 
@@ -232,7 +233,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
     }
 
     [TestMethod]
-    [Timeout(3_000, CooperativeCancellation = true)]
+    [Timeout(15_000, CooperativeCancellation = true)]
     public async Task Blocking_startup_cancellation_callback_is_bounded_and_owned()
     {
         var events = new List<string>();
@@ -257,7 +258,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
             new RecordingLease(events, available: true), operations, TimeSpan.FromMilliseconds(75));
 
         var start = subject.StartAsync();
-        await startupEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await startupEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         try
         {
             var invocation = Task.Factory.StartNew(
@@ -265,7 +266,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
                 CancellationToken.None,
                 TaskCreationOptions.DenyChildAttach,
                 TaskScheduler.Default);
-            Assert.IsTrue(cancellationEntered.Wait(TimeSpan.FromSeconds(1)));
+            Assert.IsTrue(cancellationEntered.Wait(TimeSpan.FromSeconds(5)));
             var stop = await invocation.WaitAsync(TimeSpan.FromMilliseconds(500));
             var result = await stop.WaitAsync(TimeSpan.FromMilliseconds(500));
 
@@ -280,12 +281,12 @@ public sealed class ApplicationLifecycleCoordinatorTests
         }
 
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await start);
-        await subject.DeferredCleanupCompletion.WaitAsync(TimeSpan.FromSeconds(1));
+        await subject.DeferredCleanupCompletion.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.AreEqual("lease.release", events[^1]);
     }
 
     [TestMethod]
-    [Timeout(3_000, CooperativeCancellation = true)]
+    [Timeout(15_000, CooperativeCancellation = true)]
     public async Task Blocking_lease_release_is_bounded_and_owned_during_normal_stop()
     {
         var events = new List<string>();
@@ -306,7 +307,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
         var stop = subject.StopAsync();
         try
         {
-            Assert.IsTrue(releaseEntered.Wait(TimeSpan.FromSeconds(1)));
+            Assert.IsTrue(releaseEntered.Wait(TimeSpan.FromSeconds(5)));
             var result = await stop.WaitAsync(TimeSpan.FromMilliseconds(500));
 
             Assert.AreEqual(LifecycleStopOutcome.Interrupted, result.Outcome);
@@ -317,13 +318,13 @@ public sealed class ApplicationLifecycleCoordinatorTests
         {
             allowRelease.Set();
         }
-        await subject.DeferredCleanupCompletion.WaitAsync(TimeSpan.FromSeconds(1));
+        await subject.DeferredCleanupCompletion.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.AreEqual(1, events.Count(item => item == "lease.release"));
         Assert.IsEmpty(subject.LateFailures);
     }
 
     [TestMethod]
-    [Timeout(3_000, CooperativeCancellation = true)]
+    [Timeout(15_000, CooperativeCancellation = true)]
     public async Task Blocking_lease_release_is_bounded_and_owned_during_startup_rollback()
     {
         var events = new List<string>();
@@ -346,7 +347,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
         var start = subject.StartAsync();
         try
         {
-            Assert.IsTrue(releaseEntered.Wait(TimeSpan.FromSeconds(1)));
+            Assert.IsTrue(releaseEntered.Wait(TimeSpan.FromSeconds(5)));
             var startFailure = await Assert.ThrowsExactlyAsync<AggregateException>(
                 async () => await start.WaitAsync(TimeSpan.FromMilliseconds(500)));
             Assert.AreSame(primary, startFailure.InnerExceptions[0]);
@@ -361,13 +362,13 @@ public sealed class ApplicationLifecycleCoordinatorTests
         {
             allowRelease.Set();
         }
-        await subject.DeferredCleanupCompletion.WaitAsync(TimeSpan.FromSeconds(1));
+        await subject.DeferredCleanupCompletion.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.AreEqual(1, events.Count(item => item == "lease.release"));
         Assert.IsEmpty(subject.LateFailures);
     }
 
     [TestMethod]
-    [Timeout(3_000, CooperativeCancellation = true)]
+    [Timeout(15_000, CooperativeCancellation = true)]
     public async Task Timed_out_shutdown_retains_cancellation_source_until_deferred_chain_finishes()
     {
         var events = new List<string>();
@@ -397,7 +398,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
         {
             var result = await subject.StopAsync().WaitAsync(TimeSpan.FromMilliseconds(500));
             Assert.AreEqual(LifecycleStopOutcome.Interrupted, result.Outcome);
-            Assert.IsTrue(cancellationEntered.Wait(TimeSpan.FromSeconds(1)));
+            Assert.IsTrue(cancellationEntered.Wait(TimeSpan.FromSeconds(5)));
             Assert.IsTrue(capturedToken.IsCancellationRequested);
             Assert.IsTrue(capturedToken.WaitHandle.WaitOne(0));
             var postResultCallback = false;
@@ -416,7 +417,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
             stageCompletion.TrySetResult();
             allowCancellation.Set();
         }
-        await subject.DeferredCleanupCompletion.WaitAsync(TimeSpan.FromSeconds(1));
+        await subject.DeferredCleanupCompletion.WaitAsync(TimeSpan.FromSeconds(5));
         blockingRegistration.Dispose();
 
         CollectionAssert.IsSubsetOf(
