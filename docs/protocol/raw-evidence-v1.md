@@ -51,8 +51,8 @@ The v1 absolute bounds are:
 | Stopwatch frequency | 1-10,000,000,000 ticks/second |
 
 A configuration MAY lower the payload, file, or duration bound and MAY raise the free-space floor.
-`maximumFileBytes` MUST remain in `[136, 536870912]`; other configured limits MUST remain within
-their absolute v1 bounds.
+Duration is an integer number of milliseconds in `[1, 900000]`. `maximumFileBytes` MUST remain in
+`[136, 536870912]`; other configured limits MUST remain within their absolute v1 bounds.
 
 ## 3. Capture identity and generated names
 

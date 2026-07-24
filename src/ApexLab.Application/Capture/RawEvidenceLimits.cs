@@ -24,6 +24,12 @@ public sealed class RawEvidenceLimits
         ArgumentOutOfRangeException.ThrowIfGreaterThan(
             resolvedDuration,
             AbsoluteMaximumDuration);
+        if (resolvedDuration.Ticks % TimeSpan.TicksPerMillisecond != 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maximumDuration),
+                "Raw evidence duration must use whole milliseconds.");
+        }
         ArgumentOutOfRangeException.ThrowIfLessThan(
             maximumFileBytes,
             MinimumFileBytes);

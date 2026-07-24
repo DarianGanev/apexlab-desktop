@@ -23,7 +23,7 @@ public sealed class RawEvidenceLimitsTests
     public void AcceptsEveryInclusiveBoundary()
     {
         var minimum = new RawEvidenceLimits(
-            TimeSpan.FromTicks(1),
+            TimeSpan.FromMilliseconds(1),
             RawEvidenceLimits.MinimumFileBytes,
             minimumFreeSpaceBytes: 0,
             maximumPayloadBytes: 1);
@@ -33,7 +33,7 @@ public sealed class RawEvidenceLimitsTests
             long.MaxValue,
             UdpDatagramLimits.MaximumPayloadLength);
 
-        Assert.AreEqual(TimeSpan.FromTicks(1), minimum.MaximumDuration);
+        Assert.AreEqual(TimeSpan.FromMilliseconds(1), minimum.MaximumDuration);
         Assert.AreEqual(RawEvidenceLimits.MinimumFileBytes, minimum.MaximumFileBytes);
         Assert.AreEqual(long.MaxValue, maximum.MinimumFreeSpaceBytes);
     }
@@ -45,8 +45,12 @@ public sealed class RawEvidenceLimitsTests
         [
             () => new RawEvidenceLimits(TimeSpan.Zero),
             () => new RawEvidenceLimits(TimeSpan.FromTicks(-1)),
+            () => new RawEvidenceLimits(TimeSpan.FromTicks(1)),
             () => new RawEvidenceLimits(
-                RawEvidenceLimits.AbsoluteMaximumDuration + TimeSpan.FromTicks(1)),
+                TimeSpan.FromMilliseconds(1) + TimeSpan.FromTicks(1)),
+            () => new RawEvidenceLimits(
+                RawEvidenceLimits.AbsoluteMaximumDuration
+                + TimeSpan.FromMilliseconds(1)),
             () => new RawEvidenceLimits(
                 maximumFileBytes: RawEvidenceLimits.MinimumFileBytes - 1),
             () => new RawEvidenceLimits(
