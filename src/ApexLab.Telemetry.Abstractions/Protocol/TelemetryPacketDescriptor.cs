@@ -1,8 +1,10 @@
+using ApexLab.Telemetry.Abstractions.Capture;
+
 namespace ApexLab.Telemetry.Abstractions.Protocol;
 
 public sealed record TelemetryPacketDescriptor
 {
-    public const int MaximumUdpPayloadLength = 65_507;
+    public const int MaximumUdpPayloadLength = UdpDatagramLimits.MaximumPayloadLength;
 
     public TelemetryPacketDescriptor(
         string familyName,
