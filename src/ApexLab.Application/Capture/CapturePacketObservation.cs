@@ -1,3 +1,4 @@
+using ApexLab.Telemetry.Abstractions.Capture;
 using ApexLab.Telemetry.Abstractions.Protocol;
 
 namespace ApexLab.Application.Capture;
@@ -8,6 +9,7 @@ public readonly record struct CapturePacketObservation
         long sequence,
         long monotonicTimestamp,
         DateTimeOffset receivedAtUtc,
+        int datagramLength,
         TelemetryPacketResult result)
     {
         if (sequence < 1)
@@ -31,6 +33,13 @@ public readonly record struct CapturePacketObservation
                 nameof(receivedAtUtc));
         }
 
+        if (datagramLength is < 0 or > UdpDatagramLimits.MaximumPayloadLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(datagramLength),
+                "An observed UDP datagram length must be between 0 and 65507 bytes.");
+        }
+
         if (result.Classification == TelemetryPacketClassification.Unspecified
             || !Enum.IsDefined(result.Classification))
         {
@@ -42,6 +51,7 @@ public readonly record struct CapturePacketObservation
         Sequence = sequence;
         MonotonicTimestamp = monotonicTimestamp;
         ReceivedAtUtc = receivedAtUtc;
+        DatagramLength = datagramLength;
         Result = result;
     }
 
@@ -50,6 +60,8 @@ public readonly record struct CapturePacketObservation
     public long MonotonicTimestamp { get; }
 
     public DateTimeOffset ReceivedAtUtc { get; }
+
+    public int DatagramLength { get; }
 
     public TelemetryPacketResult Result { get; }
 }

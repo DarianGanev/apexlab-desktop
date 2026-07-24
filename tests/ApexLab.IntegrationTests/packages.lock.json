@@ -479,6 +479,15 @@
           "ApexLab.Telemetry.Abstractions": "[0.1.0, )"
         }
       },
+      "apexlab.replay": {
+        "type": "Project",
+        "dependencies": {
+          "ApexLab.Application": "[0.1.0, )",
+          "ApexLab.Persistence": "[0.1.0, )",
+          "ApexLab.Protocols.F125": "[0.1.0, )",
+          "ApexLab.Telemetry": "[0.1.0, )"
+        }
+      },
       "apexlab.telemetry": {
         "type": "Project",
         "dependencies": {

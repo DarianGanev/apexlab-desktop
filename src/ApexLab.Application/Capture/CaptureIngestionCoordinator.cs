@@ -93,6 +93,7 @@ public sealed class CaptureIngestionCoordinator
                 envelope.Sequence,
                 envelope.MonotonicTimestamp,
                 envelope.ReceivedAtUtc,
+                envelope.Payload.Length,
                 result));
     }
 
