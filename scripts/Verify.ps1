@@ -109,6 +109,19 @@ function Assert-NoPersonalDataDirectories {
     }
 }
 
+function Assert-NoRawEvidenceFiles {
+    param([Parameter(Mandatory)][string[]] $RelativePaths)
+
+    foreach ($relativePath in $RelativePaths) {
+        $normalized = $relativePath.Replace("\", "/")
+        if ($normalized -match "(^|/)private-validation(/|$)" `
+            -or $normalized.EndsWith(".apxraw", [StringComparison]::OrdinalIgnoreCase) `
+            -or $normalized.EndsWith(".apxraw.json", [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Raw evidence or private validation content is tracked: $relativePath."
+        }
+    }
+}
+
 function Assert-FixtureSizeBudget {
     param(
         [Parameter(Mandatory)][string] $Root,
@@ -214,6 +227,25 @@ function Test-RepositoryCheckFailurePaths {
             Assert-NoPersonalDataDirectories -RelativePaths @("data/private.txt")
         }
 
+        Assert-CheckRejects `
+            -Name "raw evidence" `
+            -ExpectedMessagePattern '^Raw evidence or private validation content is tracked' `
+            -Check {
+            Assert-NoRawEvidenceFiles -RelativePaths @("captures/synthetic.apxraw")
+        }
+        Assert-CheckRejects `
+            -Name "raw evidence manifest" `
+            -ExpectedMessagePattern '^Raw evidence or private validation content is tracked' `
+            -Check {
+            Assert-NoRawEvidenceFiles -RelativePaths @("synthetic.apxraw.json")
+        }
+        Assert-CheckRejects `
+            -Name "private validation" `
+            -ExpectedMessagePattern '^Raw evidence or private validation content is tracked' `
+            -Check {
+            Assert-NoRawEvidenceFiles -RelativePaths @("private-validation/aggregate.json")
+        }
+
         $largeFixtureDirectory = Join-Path $fixtureRoot "tests\Fixtures"
         [IO.Directory]::CreateDirectory($largeFixtureDirectory) | Out-Null
         $largeFixture = Join-Path $largeFixtureDirectory "large.bin"
@@ -286,6 +318,7 @@ try {
     Assert-NoConflictMarkers -Root $repositoryRoot -RelativePaths $trackedFiles
     Assert-NoSecretPatterns -Root $repositoryRoot -RelativePaths $trackedFiles
     Assert-NoPersonalDataDirectories -RelativePaths $trackedFiles
+    Assert-NoRawEvidenceFiles -RelativePaths $trackedFiles
     Assert-FixtureSizeBudget `
         -Root $repositoryRoot `
         -RelativePaths $trackedFiles `
