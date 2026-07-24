@@ -30,6 +30,6 @@ Evaluation data is divided into a development corpus and a frozen personal holdo
 
 ## Deletion and export
 
-Export is always explicit and includes a manifest, versions, and checksums. Player-only derived export is the default. A raw export preserves required F1 datagrams exactly; although Participants/name packets are excluded, other required packet types contain anonymous arrays for multiple vehicle slots. The application warns about that distinction before raw export.
+Export is always explicit and includes a manifest, versions, and checksums. Player-only derived export is the default. A raw export preserves required F1 datagrams exactly; although Participants and Lobby Info packets are excluded because they carry names or network-player identity, other required packet types contain anonymous arrays for multiple vehicle slots. The application warns about that distinction before raw export.
 
 Deletion resolves an exact target, communicates whether recovery is possible, and never recursively operates on an unresolved or broad path.
