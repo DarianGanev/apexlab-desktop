@@ -15,7 +15,9 @@ public sealed class CaptureIngestionCoordinator
     private readonly TaskCompletionSource _started =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly object _finalizeGate = new();
+    private readonly object _stopGate = new();
     private Task<RawEvidenceCompletion>? _finalizationTask;
+    private Task? _sourceStopTask;
     private int _runStarted;
 
     public CaptureIngestionCoordinator(
@@ -87,6 +89,16 @@ public sealed class CaptureIngestionCoordinator
         }
     }
 
+    public Task StopSourceAsync(
+        CancellationToken cancellationToken = default)
+    {
+        lock (_stopGate)
+        {
+            return _sourceStopTask ??=
+                _source.StopAsync(cancellationToken);
+        }
+    }
+
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
         if (Interlocked.Exchange(ref _runStarted, 1) != 0)
@@ -136,7 +148,7 @@ public sealed class CaptureIngestionCoordinator
 
         try
         {
-            await _source.StopAsync().ConfigureAwait(false);
+            await StopSourceAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
         {
