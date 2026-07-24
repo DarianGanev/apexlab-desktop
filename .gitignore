@@ -66,6 +66,9 @@ profiles/
 research/private/
 vendor-specs/
 *.apexlab
+*.apxraw
+*.apxraw.json
+/private-validation/
 
 # Operating-system files
 Thumbs.db
