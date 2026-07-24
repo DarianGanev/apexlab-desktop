@@ -45,27 +45,31 @@ internal static class ReplayCommand
 
         ITelemetryProtocolAdapter? adapter = null;
         CaptureIngestionCoordinator? coordinator = null;
+        RawEvidenceCapture? unownedCapture = null;
         try
         {
-            var capture = await RawEvidenceReader.OpenAsync(
+            unownedCapture = await RawEvidenceReader.OpenAsync(
                 paths,
                 parsed.CaptureId,
                 cancellationToken).ConfigureAwait(false);
             if (!ReplayProtocolRegistry.TryResolve(
-                    capture.Completion.ProtocolId.Value,
+                    unownedCapture.Completion.ProtocolId.Value,
                     out adapter))
             {
-                await capture.DisposeAsync().ConfigureAwait(false);
+                await unownedCapture.DisposeAsync().ConfigureAwait(false);
+                unownedCapture = null;
                 return Status(
                     ReplayExitCode.UnsupportedProtocol,
                     "unsupportedProtocol");
             }
 
             await using var source = new RawReplayDatagramSource(
-                capture,
+                unownedCapture,
                 new RawReplayOptions(
                     parsed.TimingMode,
                     parsed.SpeedPermille));
+            var capture = unownedCapture;
+            unownedCapture = null;
             coordinator = new CaptureIngestionCoordinator(
                 source,
                 adapter,
@@ -114,6 +118,21 @@ internal static class ReplayCommand
             return Status(
                 ReplayExitCode.UnexpectedFailure,
                 "unexpectedFailure");
+        }
+        finally
+        {
+            if (unownedCapture is not null)
+            {
+                try
+                {
+                    await unownedCapture.DisposeAsync()
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Disposal attempts every retained handle internally.
+                }
+            }
         }
     }
 

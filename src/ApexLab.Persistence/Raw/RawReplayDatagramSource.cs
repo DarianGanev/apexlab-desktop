@@ -52,6 +52,7 @@ public sealed class RawReplayOptions
 public sealed class RawReplayDatagramSource : IDatagramSource
 {
     private readonly object _gate = new();
+    private readonly object _counterGate = new();
     private readonly RawEvidenceCapture _capture;
     private readonly RawReplayOptions _options;
     private readonly TimeProvider _timeProvider;
@@ -107,13 +108,15 @@ public sealed class RawReplayDatagramSource : IDatagramSource
     {
         get
         {
-            var enqueued = Interlocked.Read(ref _enqueued);
-            return new DatagramSourceCounters(
-                enqueued,
-                enqueued,
-                sourceDroppedFull: 0,
-                sourceRejectedOversized: 0,
-                socketErrors: 0);
+            lock (_counterGate)
+            {
+                return new DatagramSourceCounters(
+                    _enqueued,
+                    _enqueued,
+                    sourceDroppedFull: 0,
+                    sourceRejectedOversized: 0,
+                    socketErrors: 0);
+            }
         }
     }
 
@@ -292,13 +295,16 @@ public sealed class RawReplayDatagramSource : IDatagramSource
         while (await _channel.Writer.WaitToWriteAsync(
                    cancellationToken).ConfigureAwait(false))
         {
-            Interlocked.Increment(ref _enqueued);
-            if (_channel.Writer.TryWrite(envelope))
+            lock (_counterGate)
             {
-                return;
-            }
+                _enqueued = checked(_enqueued + 1);
+                if (_channel.Writer.TryWrite(envelope))
+                {
+                    return;
+                }
 
-            Interlocked.Decrement(ref _enqueued);
+                _enqueued--;
+            }
         }
 
         throw new ChannelClosedException();
