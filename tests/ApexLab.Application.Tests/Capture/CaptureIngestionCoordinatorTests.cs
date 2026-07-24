@@ -62,7 +62,7 @@ public sealed class CaptureIngestionCoordinatorTests
         Assert.AreEqual(1L, counters.Classifier.InvalidPacketLength);
         Assert.AreEqual(1L, counters.Classifier.ExcludedPrivacyPacket);
         Assert.AreEqual(0L, counters.Classifier.UnexpectedSender);
-        Assert.AreEqual(0L, counters.Classifier.ClassifierAbandonedOnInterrupt);
+        Assert.AreEqual(0L, counters.Classifier.ClassifierAbandonedOnTermination);
         Assert.IsTrue(counters.HasCompleteSourceAccounting);
     }
 
@@ -115,7 +115,9 @@ public sealed class CaptureIngestionCoordinatorTests
 
         Assert.HasCount(1, observer.Observations);
         Assert.AreEqual(1L, subject.Counters.Classifier.SourceDequeued);
-        Assert.AreEqual(2L, subject.Counters.Classifier.ClassifierAbandonedOnInterrupt);
+        Assert.AreEqual(
+            2L,
+            subject.Counters.Classifier.ClassifierAbandonedOnTermination);
         Assert.IsTrue(subject.Counters.HasCompleteSourceAccounting);
         Assert.AreEqual(1, source.StopCalls);
     }
@@ -155,7 +157,28 @@ public sealed class CaptureIngestionCoordinatorTests
         Assert.AreEqual(0L, subject.Counters.Classifier.SourceDequeued);
         Assert.AreEqual(
             1L,
-            subject.Counters.Classifier.ClassifierAbandonedOnInterrupt);
+            subject.Counters.Classifier.ClassifierAbandonedOnTermination);
+        Assert.IsTrue(subject.Counters.HasCompleteSourceAccounting);
+    }
+
+    [TestMethod]
+    public async Task SourceStartupFailureIsDistinguishedAndStillStops()
+    {
+        var startupFailure = new IOException("start failed");
+        var source = new FiniteDatagramSource(
+            [],
+            startFailure: startupFailure);
+        var subject = new CaptureIngestionCoordinator(
+            source,
+            new MarkerProtocolAdapter(),
+            SenderPolicy.LoopbackOnly);
+
+        var thrown = await Assert.ThrowsExactlyAsync<CaptureSourceStartupException>(
+            () => subject.RunAsync(TestContext.CancellationToken));
+
+        Assert.AreSame(startupFailure, thrown.InnerException);
+        Assert.AreEqual(1, source.StartCalls);
+        Assert.AreEqual(1, source.StopCalls);
         Assert.IsTrue(subject.Counters.HasCompleteSourceAccounting);
     }
 
@@ -184,7 +207,7 @@ public sealed class CaptureIngestionCoordinatorTests
         Assert.AreEqual(1L, subject.Counters.Classifier.Compatible);
         Assert.AreEqual(
             0L,
-            subject.Counters.Classifier.ClassifierAbandonedOnInterrupt);
+            subject.Counters.Classifier.ClassifierAbandonedOnTermination);
         Assert.IsTrue(subject.Counters.HasCompleteSourceAccounting);
     }
 
@@ -197,7 +220,7 @@ public sealed class CaptureIngestionCoordinatorTests
             [
                 CreateEnvelope(1, IPAddress.Loopback, 0),
             ],
-            stopFailure);
+            stopFailure: stopFailure);
         var subject = new CaptureIngestionCoordinator(
             source,
             new ThrowingProtocolAdapter(processingFailure),
@@ -290,15 +313,18 @@ public sealed class CaptureIngestionCoordinatorTests
     private sealed class FiniteDatagramSource : IDatagramSource
     {
         private readonly DatagramEnvelope[] _envelopes;
+        private readonly Exception? _startFailure;
         private readonly Exception? _stopFailure;
         private readonly Channel<DatagramEnvelope> _channel =
             Channel.CreateUnbounded<DatagramEnvelope>();
 
         public FiniteDatagramSource(
             IEnumerable<DatagramEnvelope> envelopes,
+            Exception? startFailure = null,
             Exception? stopFailure = null)
         {
             _envelopes = envelopes.ToArray();
+            _startFailure = startFailure;
             _stopFailure = stopFailure;
         }
 
@@ -320,6 +346,11 @@ public sealed class CaptureIngestionCoordinatorTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             StartCalls++;
+            if (_startFailure is not null)
+            {
+                return Task.FromException(_startFailure);
+            }
+
             foreach (var envelope in _envelopes)
             {
                 Assert.IsTrue(_channel.Writer.TryWrite(envelope));

@@ -15,7 +15,7 @@ internal sealed class DatagramClassificationLedger
     private long _invalidPacketLength;
     private long _excludedPrivacyPacket;
     private long _unexpectedSender;
-    private long _classifierAbandonedOnInterrupt;
+    private long _classifierAbandonedOnTermination;
 
     public void Record(TelemetryPacketClassification classification)
     {
@@ -37,8 +37,8 @@ internal sealed class DatagramClassificationLedger
 
         lock (_gate)
         {
-            _classifierAbandonedOnInterrupt = checked(
-                _classifierAbandonedOnInterrupt + count);
+            _classifierAbandonedOnTermination = checked(
+                _classifierAbandonedOnTermination + count);
         }
     }
 
@@ -57,7 +57,7 @@ internal sealed class DatagramClassificationLedger
                 _invalidPacketLength,
                 _excludedPrivacyPacket,
                 _unexpectedSender,
-                _classifierAbandonedOnInterrupt);
+                _classifierAbandonedOnTermination);
         }
     }
 

@@ -62,7 +62,7 @@ public readonly record struct DatagramClassificationCounters
         long invalidPacketLength,
         long excludedPrivacyPacket,
         long unexpectedSender,
-        long classifierAbandonedOnInterrupt)
+        long classifierAbandonedOnTermination)
     {
         CounterMath.RequireNonNegative(sourceDequeued, nameof(sourceDequeued));
         CounterMath.RequireNonNegative(compatible, nameof(compatible));
@@ -79,8 +79,8 @@ public readonly record struct DatagramClassificationCounters
             nameof(excludedPrivacyPacket));
         CounterMath.RequireNonNegative(unexpectedSender, nameof(unexpectedSender));
         CounterMath.RequireNonNegative(
-            classifierAbandonedOnInterrupt,
-            nameof(classifierAbandonedOnInterrupt));
+            classifierAbandonedOnTermination,
+            nameof(classifierAbandonedOnTermination));
 
         var classified = CounterMath.CheckedAdd(compatible, malformedHeader, nameof(malformedHeader));
         classified = CounterMath.CheckedAdd(
@@ -128,7 +128,7 @@ public readonly record struct DatagramClassificationCounters
         InvalidPacketLength = invalidPacketLength;
         ExcludedPrivacyPacket = excludedPrivacyPacket;
         UnexpectedSender = unexpectedSender;
-        ClassifierAbandonedOnInterrupt = classifierAbandonedOnInterrupt;
+        ClassifierAbandonedOnTermination = classifierAbandonedOnTermination;
     }
 
     public long SourceDequeued { get; }
@@ -151,9 +151,10 @@ public readonly record struct DatagramClassificationCounters
 
     public long UnexpectedSender { get; }
 
-    public long ClassifierAbandonedOnInterrupt { get; }
+    public long ClassifierAbandonedOnTermination { get; }
 
-    public bool WasAbandonedOnInterrupt => ClassifierAbandonedOnInterrupt != 0;
+    public bool WasAbandonedOnTermination =>
+        ClassifierAbandonedOnTermination != 0;
 }
 
 public readonly record struct EvidenceSinkCounters
@@ -256,7 +257,7 @@ public sealed record CaptureCounters
     {
         var classifierAccounted = CounterMath.CheckedAdd(
             classifier.SourceDequeued,
-            classifier.ClassifierAbandonedOnInterrupt,
+            classifier.ClassifierAbandonedOnTermination,
             nameof(classifier));
         if (classifierAccounted > source.SourceEnqueued)
         {
@@ -273,10 +274,10 @@ public sealed record CaptureCounters
         }
 
         var enqueuedAwaitingClassifier = source.SourceEnqueued - classifierAccounted;
-        if (classifier.WasAbandonedOnInterrupt && enqueuedAwaitingClassifier != 0)
+        if (classifier.WasAbandonedOnTermination && enqueuedAwaitingClassifier != 0)
         {
             throw new ArgumentException(
-                "An interrupted classifier snapshot must transfer the entire backlog to abandonment.",
+                "A terminated classifier snapshot must transfer the entire backlog to abandonment.",
                 nameof(classifier));
         }
         if ((evidence.HasDeferredCleanup || evidence.FinalizedRecords != 0) &&

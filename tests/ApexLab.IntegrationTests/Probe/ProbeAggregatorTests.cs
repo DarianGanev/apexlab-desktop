@@ -223,7 +223,7 @@ public sealed class ProbeAggregatorTests
                 invalidPacketLength: 0,
                 excludedPrivacyPacket: 0,
                 unexpectedSender: 0,
-                classifierAbandonedOnInterrupt: 0));
+                classifierAbandonedOnTermination: 0));
     }
 
     private static IEnumerable<string> EnumeratePropertyNames(JsonElement element)

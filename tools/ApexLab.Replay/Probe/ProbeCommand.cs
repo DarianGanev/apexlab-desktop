@@ -48,12 +48,15 @@ internal static class ProbeCommand
         {
             await using (var source = sourceFactory(options))
             {
+                using var runCancellation =
+                    CancellationTokenSource.CreateLinkedTokenSource(
+                        interruptionToken);
                 coordinator = new CaptureIngestionCoordinator(
                     source,
                     adapter,
                     SenderPolicy.LoopbackOnly,
                     aggregator);
-                var runTask = coordinator.RunAsync(interruptionToken);
+                var runTask = coordinator.RunAsync(runCancellation.Token);
                 var durationTask = Task.Delay(parsed.Duration, interruptionToken);
                 var firstCompleted = await Task.WhenAny(runTask, durationTask)
                     .ConfigureAwait(false);
@@ -75,9 +78,11 @@ internal static class ProbeCommand
                 }
                 else
                 {
+                    runCancellation.Cancel();
                     await StopAndObserveRunAsync(
                             () => source.StopAsync(),
-                            runTask)
+                            runTask,
+                            runCancellation.Token)
                         .ConfigureAwait(false);
                 }
 
@@ -100,7 +105,8 @@ internal static class ProbeCommand
                 coordinator.Counters,
                 aggregator);
         }
-        catch (SocketException)
+        catch (CaptureSourceStartupException exception)
+            when (exception.InnerException is SocketException)
         {
             return new(
                 ProbeExitCode.BindFailure,
@@ -120,7 +126,8 @@ internal static class ProbeCommand
 
     internal static async Task StopAndObserveRunAsync(
         Func<Task> stopOperation,
-        Task runTask)
+        Task runTask,
+        CancellationToken expectedRunCancellation = default)
     {
         ArgumentNullException.ThrowIfNull(stopOperation);
         ArgumentNullException.ThrowIfNull(runTask);
@@ -143,6 +150,12 @@ internal static class ProbeCommand
         catch (Exception exception)
         {
             runFailure = exception;
+        }
+
+        if (expectedRunCancellation.IsCancellationRequested
+            && runFailure is OperationCanceledException)
+        {
+            runFailure = null;
         }
 
         ThrowFailures(stopFailure, runFailure);

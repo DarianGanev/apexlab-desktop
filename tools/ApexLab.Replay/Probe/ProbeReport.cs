@@ -32,7 +32,7 @@ internal sealed record ProbeClassificationReport(
     long InvalidPacketLength,
     long ExcludedPrivacyPacket,
     long UnexpectedSender,
-    long ClassifierAbandonedOnInterrupt);
+    long ClassifierAbandonedOnTermination);
 
 internal sealed record ProbePacketShapeReport(
     byte PacketId,

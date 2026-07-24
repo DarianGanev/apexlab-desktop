@@ -83,7 +83,7 @@ internal sealed class ProbeAggregator : ICapturePacketObserver
                     classifier.InvalidPacketLength,
                     classifier.ExcludedPrivacyPacket,
                     classifier.UnexpectedSender,
-                    classifier.ClassifierAbandonedOnInterrupt),
+                    classifier.ClassifierAbandonedOnTermination),
                 _packetShapes
                     .OrderBy(pair => pair.Key.PacketId)
                     .ThenBy(pair => pair.Key.PacketVersion)

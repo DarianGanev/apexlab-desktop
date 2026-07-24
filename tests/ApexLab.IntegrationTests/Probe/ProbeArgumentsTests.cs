@@ -149,12 +149,35 @@ public sealed class ProbeArgumentsTests
     }
 
     [TestMethod]
+    public async Task TimedStopFailureWithOpenOutputReturnsUnexpectedFailure()
+    {
+        var source = new StopFailureOpenSource();
+
+        var result = await ProbeCommand.ExecuteAsync(
+                ["probe", "--duration-seconds", "1"],
+                TestContext.CancellationToken,
+                _ => source)
+            .WaitAsync(
+                TimeSpan.FromSeconds(5),
+                TestContext.CancellationToken);
+        using var document = JsonDocument.Parse(result.Json);
+
+        Assert.AreEqual(ProbeExitCode.UnexpectedFailure, result.ExitCode);
+        Assert.AreEqual(
+            "unexpectedFailure",
+            document.RootElement.GetProperty("status").GetString());
+        Assert.IsGreaterThanOrEqualTo(2, source.StopCalls);
+        Assert.AreEqual(1, source.DisposeCalls);
+    }
+
+    [TestMethod]
     public async Task DisposalFailureReturnsUnexpectedFailureContract()
     {
         var result = await ProbeCommand.ExecuteAsync(
             ["probe"],
             TestContext.CancellationToken,
-            _ => new DisposalFailureSource());
+            _ => new DisposalFailureSource(
+                new IOException("synthetic disposal failure")));
         using var document = JsonDocument.Parse(result.Json);
 
         Assert.AreEqual(ProbeExitCode.UnexpectedFailure, result.ExitCode);
@@ -169,15 +192,33 @@ public sealed class ProbeArgumentsTests
             document.RootElement.GetProperty("status").GetString());
     }
 
+    [TestMethod]
+    public async Task SocketFailureDuringDisposalIsNotReportedAsBindFailure()
+    {
+        var result = await ProbeCommand.ExecuteAsync(
+            ["probe"],
+            TestContext.CancellationToken,
+            _ => new DisposalFailureSource(
+                new SocketException((int)SocketError.ConnectionReset)));
+        using var document = JsonDocument.Parse(result.Json);
+
+        Assert.AreEqual(ProbeExitCode.UnexpectedFailure, result.ExitCode);
+        Assert.AreEqual(
+            "unexpectedFailure",
+            document.RootElement.GetProperty("status").GetString());
+    }
+
     public TestContext TestContext { get; set; } = null!;
 
     private sealed class DisposalFailureSource : IDatagramSource
     {
         private readonly Channel<DatagramEnvelope> _output =
             Channel.CreateUnbounded<DatagramEnvelope>();
+        private readonly Exception _disposalFailure;
 
-        public DisposalFailureSource()
+        public DisposalFailureSource(Exception disposalFailure)
         {
+            _disposalFailure = disposalFailure;
             _output.Writer.TryComplete();
         }
 
@@ -198,8 +239,44 @@ public sealed class ProbeArgumentsTests
 
         public ValueTask DisposeAsync()
         {
-            return ValueTask.FromException(
-                new IOException("synthetic disposal failure"));
+            return ValueTask.FromException(_disposalFailure);
+        }
+    }
+
+    private sealed class StopFailureOpenSource : IDatagramSource
+    {
+        private readonly Channel<DatagramEnvelope> _output =
+            Channel.CreateUnbounded<DatagramEnvelope>();
+        private readonly IOException _stopFailure =
+            new("synthetic stop failure");
+        private int _stopCalls;
+        private int _disposeCalls;
+
+        public ChannelReader<DatagramEnvelope> Output => _output.Reader;
+
+        public DatagramSourceCounters Counters => default;
+
+        public int StopCalls => Volatile.Read(ref _stopCalls);
+
+        public int DisposeCalls => Volatile.Read(ref _disposeCalls);
+
+        public Task StartAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _stopCalls);
+            return Task.FromException(_stopFailure);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Interlocked.Increment(ref _disposeCalls);
+            _output.Writer.TryComplete();
+            return ValueTask.CompletedTask;
         }
     }
 }

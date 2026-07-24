@@ -8,7 +8,7 @@ public sealed record CaptureIngestionCounters
     {
         var accounted = CounterMath.CheckedAdd(
             classifier.SourceDequeued,
-            classifier.ClassifierAbandonedOnInterrupt,
+            classifier.ClassifierAbandonedOnTermination,
             nameof(classifier));
         if (accounted > source.SourceEnqueued)
         {

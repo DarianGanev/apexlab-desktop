@@ -69,8 +69,9 @@ dotnet run --project tools/ApexLab.Replay/ApexLab.Replay.csproj -c Release -- pr
 The probe uses the same bounded UDP source, sender policy, F1 adapter, and ingestion coordinator
 planned for the desktop capture workflow. It retains no packet payload and prints aggregate JSON
 only: classifier counts, packet ID/version/length counts, rate buckets, session-UID cardinality,
-sequence/timestamp regressions, frame gaps/regressions, and player-index ranges. It never prints an
-actual session UID, sender endpoint, local path, username, or payload byte.
+sequence/timestamp regressions, skipped frame-identifier values, frame regressions, and player-index
+ranges. Skipped frame identifiers are descriptive deltas per packet family, not packet-loss claims.
+The probe never prints an actual session UID, sender endpoint, local path, username, or payload byte.
 
 Exit codes are `0` for compatible traffic, `2` for invalid arguments, `3` for bind failure, `4` for
 no traffic, `5` for incompatible-only traffic, `6` for interruption, and `7` for an unexpected

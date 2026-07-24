@@ -53,7 +53,20 @@ public sealed class CaptureIngestionCoordinator
         Exception? stopFailure = null;
         try
         {
-            await _source.StartAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _source.StartAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                throw new CaptureSourceStartupException(exception);
+            }
+
             await foreach (var envelope in _source.Output
                                .ReadAllAsync(cancellationToken)
                                .ConfigureAwait(false))
@@ -112,7 +125,7 @@ public sealed class CaptureIngestionCoordinator
         var classifier = _ledger.Snapshot();
         var alreadyAccounted = checked(
             classifier.SourceDequeued
-            + classifier.ClassifierAbandonedOnInterrupt);
+            + classifier.ClassifierAbandonedOnTermination);
         if (alreadyAccounted > sourceEnqueued)
         {
             throw new InvalidOperationException(
