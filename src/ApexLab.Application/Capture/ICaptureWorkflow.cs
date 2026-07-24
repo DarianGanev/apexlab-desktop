@@ -17,6 +17,15 @@ public interface ICaptureWorkflow : IAsyncDisposable
         CaptureStopReason reason,
         CancellationToken cancellationToken = default);
 
+    Task StopProducersAsync(
+        CancellationToken cancellationToken = default);
+
+    Task DrainWorkAsync(
+        CancellationToken cancellationToken = default);
+
+    Task FinalizeStoresAsync(
+        CancellationToken cancellationToken = default);
+
     void Reset();
 }
 

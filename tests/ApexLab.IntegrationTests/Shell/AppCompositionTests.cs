@@ -1,5 +1,8 @@
 using ApexLab.App;
+using ApexLab.App.Capture;
+using ApexLab.App.Lifecycle;
 using ApexLab.App.Shell;
+using ApexLab.Application.Capture;
 using ApexLab.Application.Configuration;
 using ApexLab.Persistence.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -25,6 +28,14 @@ public sealed class AppCompositionTests
         Assert.AreSame(
             host.Services.GetRequiredService<ShellViewModel>(),
             host.Services.GetRequiredService<ShellViewModel>());
+        Assert.AreSame(
+            host.Services.GetRequiredService<ICaptureWorkflow>(),
+            host.Services.GetRequiredService<ICaptureWorkflow>());
+        Assert.IsInstanceOfType<DesktopCaptureSessionFactory>(
+            host.Services.GetRequiredService<ICaptureSessionFactory>());
+        Assert.AreSame(
+            host.Services.GetRequiredService<CaptureLifecycleOperations>(),
+            host.Services.GetRequiredService<IApplicationLifecycleOperations>());
         Assert.IsFalse(Directory.Exists(localApplicationData));
     }
 

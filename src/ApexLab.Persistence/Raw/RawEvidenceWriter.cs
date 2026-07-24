@@ -65,11 +65,27 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
         RawEvidenceLimits? limits = null,
         CancellationToken cancellationToken = default)
     {
+        return CreateAsync(
+            paths,
+            RawEvidenceCaptureId.Create(),
+            protocolId,
+            limits,
+            cancellationToken);
+    }
+
+    public static Task<RawEvidenceWriter> CreateAsync(
+        ApplicationPaths paths,
+        RawEvidenceCaptureId captureId,
+        RawEvidenceProtocolId protocolId,
+        RawEvidenceLimits? limits = null,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(paths);
+        ArgumentNullException.ThrowIfNull(captureId);
         ArgumentNullException.ThrowIfNull(protocolId);
         return CreateForTestingAsync(
             paths,
-            RawEvidenceCaptureId.Create(),
+            captureId,
             protocolId,
             limits ?? new RawEvidenceLimits(),
             Stopwatch.Frequency,

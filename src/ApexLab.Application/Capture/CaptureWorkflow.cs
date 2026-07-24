@@ -18,6 +18,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot.Idle;
     private Task<CaptureWorkflowSnapshot>? _armTask;
     private Task<CaptureWorkflowSnapshot>? _stopTask;
+    private Task? _storeFinalizationTask;
     private Task _deferredCleanupCompletion = Task.CompletedTask;
     private ActiveSession? _session;
     private CancellationTokenSource? _armCancellation;
@@ -94,6 +95,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 Failure: null,
                 Completion: null);
             _stopTask = null;
+            _storeFinalizationTask = null;
             completion = new TaskCompletionSource<CaptureWorkflowSnapshot>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             _armTask = completion.Task;
@@ -175,6 +177,72 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         }
 
         SnapshotChanged?.Invoke(this, stopped);
+    }
+
+    public async Task StopProducersAsync(
+        CancellationToken cancellationToken = default)
+    {
+        Task<CaptureWorkflowSnapshot>? armTask;
+        CancellationTokenSource? armCancellation;
+        ActiveSession? session;
+        lock (_gate)
+        {
+            armTask = _armTask;
+            armCancellation = _armCancellation;
+            session = _session;
+        }
+
+        if (armTask is not null && !armTask.IsCompleted)
+        {
+            armCancellation?.Cancel();
+            try
+            {
+                await armTask.WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (armCancellation?.IsCancellationRequested == true)
+            {
+                return;
+            }
+
+            lock (_gate)
+            {
+                session = _session;
+            }
+        }
+
+        if (session is not null)
+        {
+            await session.Coordinator.StopSourceAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    public async Task DrainWorkAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ActiveSession? session;
+        lock (_gate)
+        {
+            session = _session;
+        }
+
+        if (session is not null)
+        {
+            await session.RunTask.WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    public Task FinalizeStoresAsync(
+        CancellationToken cancellationToken = default)
+    {
+        lock (_gate)
+        {
+            return _storeFinalizationTask ??=
+                FinalizeStoresCoreAsync(cancellationToken);
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -340,40 +408,14 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 return;
             }
 
-            await session.Coordinator.StopSourceAsync(cancellationToken)
+            await StopProducersAsync(cancellationToken)
                 .ConfigureAwait(false);
-            await session.RunTask
+            await DrainWorkAsync(cancellationToken)
                 .WaitAsync(_stopTimeout, cancellationToken)
                 .ConfigureAwait(false);
-            var evidenceCompletion =
-                await session.Coordinator.FinalizeEvidenceAsync(
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            var counters = session.Coordinator.CaptureCounters;
-            var cleanupFailure = await DisposeComponentsAsync(
-                    session.Components)
+            await FinalizeStoresAsync(cancellationToken)
                 .ConfigureAwait(false);
-            session.Lifetime.Dispose();
-            lock (_gate)
-            {
-                _session = null;
-            }
-
-            if (cleanupFailure is not null)
-            {
-                completion.TrySetResult(
-                    PublishFailure(
-                        CaptureState.Faulted,
-                        CaptureFailureKind.Unexpected,
-                        cleanupFailure));
-                return;
-            }
-
-            completion.TrySetResult(
-                PublishState(
-                    CaptureState.Stopped,
-                    counters,
-                    evidenceCompletion));
+            completion.TrySetResult(Snapshot);
         }
         catch (TimeoutException exception)
         {
@@ -391,6 +433,52 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                     Classify(exception),
                     exception));
         }
+    }
+
+    private async Task FinalizeStoresCoreAsync(
+        CancellationToken cancellationToken)
+    {
+        ActiveSession? session;
+        lock (_gate)
+        {
+            session = _session;
+        }
+
+        if (session is null)
+        {
+            return;
+        }
+
+        var evidenceCompletion =
+            await session.Coordinator.FinalizeEvidenceAsync(
+                    cancellationToken)
+                .ConfigureAwait(false);
+        var counters = session.Coordinator.CaptureCounters;
+        var cleanupFailure = await DisposeComponentsAsync(
+                session.Components)
+            .ConfigureAwait(false);
+        session.Lifetime.Dispose();
+        lock (_gate)
+        {
+            if (ReferenceEquals(_session, session))
+            {
+                _session = null;
+            }
+        }
+
+        if (cleanupFailure is not null)
+        {
+            PublishFailure(
+                CaptureState.Faulted,
+                CaptureFailureKind.Unexpected,
+                cleanupFailure);
+            ExceptionDispatchInfo.Capture(cleanupFailure).Throw();
+        }
+
+        PublishState(
+            CaptureState.Stopped,
+            counters,
+            evidenceCompletion);
     }
 
     private CaptureWorkflowSnapshot BeginInterruptedCleanup(
