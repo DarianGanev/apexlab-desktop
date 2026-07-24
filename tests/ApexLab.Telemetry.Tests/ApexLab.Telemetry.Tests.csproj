@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\ApexLab.Telemetry\ApexLab.Telemetry.csproj" />
+    <ProjectReference Include="..\..\src\ApexLab.Telemetry.Abstractions\ApexLab.Telemetry.Abstractions.csproj" />
   </ItemGroup>
 
 </Project>
