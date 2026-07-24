@@ -38,8 +38,8 @@ internal static class RawEvidenceManifestParser
     {
         if (bytes.Length is < 1 or > RawEvidenceFormat.MaximumManifestBytes)
         {
-            throw new InvalidDataException(
-                "The raw evidence manifest length is outside the v1 bound.");
+            throw new RawEvidenceReadException(
+                RawEvidenceReadFailureKind.DeclaredLimitViolation);
         }
 
         try
@@ -129,9 +129,21 @@ internal static class RawEvidenceManifestParser
                 preimage,
                 digest);
         }
-        catch (InvalidDataException)
+        catch (RawEvidenceReadException)
         {
             throw;
+        }
+        catch (ArgumentOutOfRangeException exception)
+        {
+            throw new RawEvidenceReadException(
+                RawEvidenceReadFailureKind.DeclaredLimitViolation,
+                exception);
+        }
+        catch (InvalidDataException exception)
+        {
+            throw new RawEvidenceReadException(
+                RawEvidenceReadFailureKind.MalformedStructure,
+                exception);
         }
         catch (Exception exception) when (
             exception is JsonException
@@ -140,8 +152,8 @@ internal static class RawEvidenceManifestParser
                 or OverflowException
                 or InvalidOperationException)
         {
-            throw new InvalidDataException(
-                "The raw evidence manifest is invalid.",
+            throw new RawEvidenceReadException(
+                RawEvidenceReadFailureKind.MalformedStructure,
                 exception);
         }
     }
@@ -229,8 +241,8 @@ internal static class RawEvidenceManifestParser
     {
         if (RequireInt64(parent, name) != expected)
         {
-            throw new InvalidDataException(
-                $"The manifest property '{name}' has an unsupported value.");
+            throw new RawEvidenceReadException(
+                RawEvidenceReadFailureKind.UnsupportedVersion);
         }
     }
 

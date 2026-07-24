@@ -63,18 +63,24 @@ public sealed class RawEvidenceManifestParserTests
             _ => throw new AssertFailedException("Unknown mutation."),
         };
 
-        Assert.ThrowsExactly<InvalidDataException>(
+        var exception = Assert.ThrowsExactly<RawEvidenceReadException>(
             () => RawEvidenceManifestParser.Parse(
                 Encoding.UTF8.GetBytes(text)),
             mutation);
+        Assert.AreEqual(
+            RawEvidenceReadFailureKind.MalformedStructure,
+            exception.Kind);
     }
 
     [TestMethod]
     public void RejectsOversizedInputBeforeJsonParsing()
     {
-        Assert.ThrowsExactly<InvalidDataException>(
+        var exception = Assert.ThrowsExactly<RawEvidenceReadException>(
             () => RawEvidenceManifestParser.Parse(
                 new byte[RawEvidenceFormat.MaximumManifestBytes + 1]));
+        Assert.AreEqual(
+            RawEvidenceReadFailureKind.DeclaredLimitViolation,
+            exception.Kind);
     }
 
     private static byte[] CreateCanonicalManifest()

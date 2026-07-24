@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using ApexLab.Application.Capture;
@@ -106,9 +107,17 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
         var stagingName = DataStagingName(captureId);
         try
         {
-            directory = WindowsRawEvidenceDirectory.Open(paths);
+            try
+            {
+                directory = WindowsRawEvidenceDirectory.Open(paths);
+            }
+            catch (Exception exception)
+            {
+                throw SanitizeStorageFailure(exception);
+            }
+
             RequireFreeSpace(
-                availableFreeSpace(),
+                ReadAvailableFreeSpace(availableFreeSpace),
                 limits.MinimumFreeSpaceBytes,
                 RawEvidenceFormat.DataHeaderLength);
             dataStream = directory.CreateNewFile(stagingName);
@@ -139,32 +148,22 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
         }
         catch (Exception primary)
         {
-            Exception? cleanupFailure = null;
-            if (dataStream is not null)
-            {
-                try
-                {
-                    directory!.DeleteOpenFile(
-                        dataStream.SafeFileHandle);
-                }
-                catch (Exception exception)
-                {
-                    cleanupFailure = exception;
-                }
-
-                await dataStream.DisposeAsync().ConfigureAwait(false);
-            }
-
-            directory?.Dispose();
-            if (cleanupFailure is not null)
+            var sanitizedPrimary =
+                SanitizeStorageFailure(primary);
+            var cleanupFailures =
+                await ReleaseCreationResourcesAsync(
+                    directory,
+                    dataStream).ConfigureAwait(false);
+            if (cleanupFailures.Count != 0)
             {
                 throw new AggregateException(
                     "Raw evidence creation and cleanup failed.",
-                    primary,
-                    cleanupFailure);
+                    [sanitizedPrimary, .. cleanupFailures]);
             }
 
-            throw;
+            ExceptionDispatchInfo.Capture(
+                sanitizedPrimary).Throw();
+            throw new UnreachableException();
         }
     }
 
@@ -193,7 +192,7 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
             }
 
             RequireFreeSpace(
-                _availableFreeSpace(),
+                ReadAvailableFreeSpace(_availableFreeSpace),
                 Limits.MinimumFreeSpaceBytes,
                 recordLength);
 
@@ -208,10 +207,10 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
                     envelope.Payload,
                     cancellationToken).ConfigureAwait(false);
             }
-            catch
+            catch (Exception exception)
             {
                 _state = WriterState.Faulted;
-                throw;
+                throw SanitizeStorageFailure(exception);
             }
 
             _firstSequence ??= envelope.Sequence;
@@ -287,9 +286,9 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
         await _writeGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            var cleanupErrors = MarkOpenFilesForDeletion();
-            await CloseStreamsAsync().ConfigureAwait(false);
-            _directory.Dispose();
+            var cleanupErrors =
+                await ReleaseResourcesAsync(
+                    markForDeletion: true).ConfigureAwait(false);
             if (cleanupErrors.Count != 0)
             {
                 throw new AggregateException(
@@ -307,6 +306,7 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
     private async Task<RawEvidenceCompletion> FinalizeCoreAsync()
     {
         await _writeGate.WaitAsync().ConfigureAwait(false);
+        var completionCommitted = false;
         try
         {
             try
@@ -340,7 +340,7 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
                 var manifestPreimage =
                     RawEvidenceFormat.SerializeManifestPreimage(manifest);
                 RequireFreeSpace(
-                    _availableFreeSpace(),
+                    ReadAvailableFreeSpace(_availableFreeSpace),
                     Limits.MinimumFreeSpaceBytes,
                     checked(
                         RawEvidenceFormat.FooterLength
@@ -382,9 +382,18 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
                 _directory.RenameOpenFile(
                     _manifestStream.SafeFileHandle,
                     ManifestFinalName(CaptureId));
+                completionCommitted = true;
 
-                await CloseStreamsAsync().ConfigureAwait(false);
-                _directory.Dispose();
+                var releaseErrors =
+                    await ReleaseResourcesAsync(
+                        markForDeletion: false).ConfigureAwait(false);
+                if (releaseErrors.Count != 0)
+                {
+                    throw new AggregateException(
+                        "Raw evidence was committed, but its handles could not be fully released.",
+                        releaseErrors);
+                }
+
                 _state = WriterState.Finalized;
                 return new RawEvidenceCompletion(
                     CaptureId,
@@ -397,17 +406,22 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
             catch (Exception primary)
             {
                 _state = WriterState.Faulted;
-                var cleanupErrors = MarkOpenFilesForDeletion();
-                await CloseStreamsAsync().ConfigureAwait(false);
-                _directory.Dispose();
+                var sanitizedPrimary =
+                    SanitizeStorageFailure(primary);
+                var cleanupErrors =
+                    await ReleaseResourcesAsync(
+                        markForDeletion: !completionCommitted)
+                        .ConfigureAwait(false);
                 if (cleanupErrors.Count == 0)
                 {
-                    throw;
+                    ExceptionDispatchInfo.Capture(
+                        sanitizedPrimary).Throw();
+                    throw new UnreachableException();
                 }
 
                 throw new AggregateException(
                     "Raw evidence finalization and cleanup failed.",
-                    [primary, .. cleanupErrors]);
+                    [sanitizedPrimary, .. cleanupErrors]);
             }
         }
         finally
@@ -522,27 +536,100 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
         }
     }
 
-    private async Task CloseStreamsAsync()
-    {
-        if (_manifestStream is not null)
-        {
-            await _manifestStream.DisposeAsync().ConfigureAwait(false);
-            _manifestStream = null;
-        }
-
-        if (_dataStream is not null)
-        {
-            await _dataStream.DisposeAsync().ConfigureAwait(false);
-            _dataStream = null;
-        }
-    }
-
-    private List<Exception> MarkOpenFilesForDeletion()
+    private async Task<List<Exception>> ReleaseResourcesAsync(
+        bool markForDeletion)
     {
         var failures = new List<Exception>();
-        TryMarkForDeletion(_manifestStream, failures);
-        TryMarkForDeletion(_dataStream, failures);
+        if (markForDeletion)
+        {
+            TryMarkForDeletion(_manifestStream, failures);
+            TryMarkForDeletion(_dataStream, failures);
+        }
+
+        var manifestStream = _manifestStream;
+        _manifestStream = null;
+        await TryDisposeStreamAsync(
+            manifestStream,
+            failures).ConfigureAwait(false);
+        var dataStream = _dataStream;
+        _dataStream = null;
+        await TryDisposeStreamAsync(
+            dataStream,
+            failures).ConfigureAwait(false);
+        try
+        {
+            _directory.Dispose();
+        }
+        catch (Exception exception)
+        {
+            failures.Add(SanitizeStorageFailure(exception));
+        }
+
         return failures;
+    }
+
+    private static async Task<List<Exception>>
+        ReleaseCreationResourcesAsync(
+            WindowsRawEvidenceDirectory? directory,
+            FileStream? dataStream)
+    {
+        var failures = new List<Exception>();
+        if (directory is not null && dataStream is not null)
+        {
+            try
+            {
+                directory.DeleteOpenFile(dataStream.SafeFileHandle);
+            }
+            catch (Exception exception)
+            {
+                failures.Add(SanitizeStorageFailure(exception));
+            }
+        }
+
+        await TryDisposeStreamAsync(
+            dataStream,
+            failures).ConfigureAwait(false);
+        if (directory is not null)
+        {
+            try
+            {
+                directory.Dispose();
+            }
+            catch (Exception exception)
+            {
+                failures.Add(SanitizeStorageFailure(exception));
+            }
+        }
+
+        return failures;
+    }
+
+    private static async Task TryDisposeStreamAsync(
+        FileStream? stream,
+        List<Exception> failures)
+    {
+        if (stream is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await stream.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failures.Add(SanitizeStorageFailure(exception));
+            try
+            {
+                stream.Dispose();
+            }
+            catch (Exception fallbackException)
+            {
+                failures.Add(
+                    SanitizeStorageFailure(fallbackException));
+            }
+        }
     }
 
     private void TryMarkForDeletion(
@@ -560,8 +647,50 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
         }
         catch (Exception exception)
         {
-            failures.Add(exception);
+            failures.Add(SanitizeStorageFailure(exception));
         }
+    }
+
+    private static long ReadAvailableFreeSpace(
+        Func<long> availableFreeSpace)
+    {
+        try
+        {
+            return availableFreeSpace();
+        }
+        catch (Exception exception)
+        {
+            throw SanitizeStorageFailure(exception);
+        }
+    }
+
+    private static Exception SanitizeStorageFailure(
+        Exception exception)
+    {
+        if (exception is OperationCanceledException
+            or ArgumentException
+            or InvalidOperationException)
+        {
+            return exception;
+        }
+
+        if (exception is AggregateException aggregate)
+        {
+            return new AggregateException(
+                "Multiple raw evidence storage operations failed.",
+                aggregate.InnerExceptions.Select(
+                    SanitizeStorageFailure));
+        }
+
+        if (exception is IOException
+            or UnauthorizedAccessException
+            or System.ComponentModel.Win32Exception)
+        {
+            return new IOException(
+                "A raw evidence storage operation failed.");
+        }
+
+        return exception;
     }
 
     private static void RequireFreeSpace(

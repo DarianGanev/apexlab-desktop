@@ -1,7 +1,10 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Net;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
@@ -20,9 +23,40 @@ public static class RawEvidenceReader
         RawEvidenceProtocolId expectedProtocolId,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(expectedProtocolId);
+        var capture = await OpenAsync(
+            paths,
+            captureId,
+            cancellationToken).ConfigureAwait(false);
+        if (capture.Completion.ProtocolId == expectedProtocolId)
+        {
+            return capture;
+        }
+
+        var mismatch = new RawEvidenceReadException(
+            RawEvidenceReadFailureKind.UnsupportedProtocol);
+        try
+        {
+            await capture.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception cleanupFailure)
+        {
+            throw new AggregateException(
+                "Raw evidence protocol validation and cleanup failed.",
+                mismatch,
+                cleanupFailure);
+        }
+
+        throw mismatch;
+    }
+
+    public static async Task<RawEvidenceCapture> OpenAsync(
+        ApplicationPaths paths,
+        RawEvidenceCaptureId captureId,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(captureId);
-        ArgumentNullException.ThrowIfNull(expectedProtocolId);
         cancellationToken.ThrowIfCancellationRequested();
 
         WindowsRawEvidenceDirectory? directory = null;
@@ -40,13 +74,14 @@ public static class RawEvidenceReader
                 $"{captureId.Value}.apxraw.json.partial")
                 .ConfigureAwait(false);
 
-            manifestStream = directory.OpenExistingReadOnly(
+            manifestStream = OpenRequired(
+                directory,
                 $"{captureId.Value}.apxraw.json");
             if (manifestStream.Length is < 1
                 or > RawEvidenceFormat.MaximumManifestBytes)
             {
-                throw new InvalidDataException(
-                    "The raw evidence manifest length is outside the v1 bound.");
+                throw Failure(
+                    RawEvidenceReadFailureKind.DeclaredLimitViolation);
             }
 
             var manifestBytes = new byte[
@@ -63,26 +98,32 @@ public static class RawEvidenceReader
             var manifest = document.Manifest;
             if (manifest.CaptureId != captureId)
             {
-                throw new InvalidDataException(
-                    "The manifest capture ID does not match the requested capture.");
+                throw Failure(
+                    RawEvidenceReadFailureKind.MalformedStructure);
             }
 
-            if (manifest.ProtocolId != expectedProtocolId)
-            {
-                throw new InvalidDataException(
-                    "The evidence protocol is not registered for this replay.");
-            }
-
-            dataStream = directory.OpenExistingReadOnly(
+            dataStream = OpenRequired(
+                directory,
                 $"{captureId.Value}.apxraw");
-            if (dataStream.Length != manifest.DataLengthBytes
-                || dataStream.Length < RawEvidenceLimits.MinimumFileBytes
+            if (dataStream.Length < RawEvidenceLimits.MinimumFileBytes
                 || dataStream.Length > manifest.Limits.MaximumFileBytes
                 || dataStream.Length
                     > RawEvidenceLimits.AbsoluteMaximumFileBytes)
             {
-                throw new InvalidDataException(
-                    "The raw evidence data length is invalid.");
+                throw Failure(
+                    RawEvidenceReadFailureKind.DeclaredLimitViolation);
+            }
+
+            if (dataStream.Length < manifest.DataLengthBytes)
+            {
+                throw Failure(
+                    RawEvidenceReadFailureKind.TruncatedData);
+            }
+
+            if (dataStream.Length > manifest.DataLengthBytes)
+            {
+                throw Failure(
+                    RawEvidenceReadFailureKind.TrailingData);
             }
 
             await ValidateDataAsync(
@@ -110,22 +151,74 @@ public static class RawEvidenceReader
                     manifest.CreatedUtcTicks,
                     TimeSpan.Zero));
         }
-        catch
+        catch (Exception exception)
         {
-            if (manifestStream is not null)
+            var primary = ClassifyUnexpected(exception);
+            var cleanupFailures =
+                await RawEvidenceReadResourceCleanup.ReleaseAsync(
+                    manifestStream,
+                    dataStream,
+                    directory).ConfigureAwait(false);
+            if (cleanupFailures.Count != 0)
             {
-                await manifestStream.DisposeAsync().ConfigureAwait(false);
+                throw new AggregateException(
+                    "Raw evidence validation and cleanup failed.",
+                    [primary, .. cleanupFailures]);
             }
 
-            if (dataStream is not null)
-            {
-                await dataStream.DisposeAsync().ConfigureAwait(false);
-            }
-
-            directory?.Dispose();
-            throw;
+            ExceptionDispatchInfo.Capture(primary).Throw();
+            throw new UnreachableException();
         }
     }
+
+    private static FileStream OpenRequired(
+        WindowsRawEvidenceDirectory directory,
+        string leafName)
+    {
+        try
+        {
+            return directory.OpenExistingReadOnly(leafName);
+        }
+        catch (Win32Exception exception)
+            when (exception.NativeErrorCode
+                is WindowsRawEvidenceNative.ErrorFileNotFound
+                or WindowsRawEvidenceNative.ErrorPathNotFound)
+        {
+            throw Failure(
+                RawEvidenceReadFailureKind.MissingOrIncomplete);
+        }
+    }
+
+    private static Exception ClassifyUnexpected(Exception exception)
+    {
+        if (exception is RawEvidenceReadException
+            or OperationCanceledException)
+        {
+            return exception;
+        }
+
+        if (exception is Win32Exception
+            or UnauthorizedAccessException
+            or IOException)
+        {
+            return Failure(
+                RawEvidenceReadFailureKind.UnsafePath);
+        }
+
+        if (exception is OverflowException)
+        {
+            return Failure(
+                RawEvidenceReadFailureKind.MalformedStructure,
+                exception);
+        }
+
+        return exception;
+    }
+
+    private static RawEvidenceReadException Failure(
+        RawEvidenceReadFailureKind kind,
+        Exception? innerException = null) =>
+        new(kind, innerException);
 
     private static async Task RejectStagingFileAsync(
         WindowsRawEvidenceDirectory directory,
@@ -138,8 +231,8 @@ public static class RawEvidenceReader
         }
 
         await staging.DisposeAsync().ConfigureAwait(false);
-        throw new InvalidDataException(
-            "Incomplete staging evidence exists for this capture.");
+        throw Failure(
+            RawEvidenceReadFailureKind.MissingOrIncomplete);
     }
 
     private static async Task ValidateDataAsync(
@@ -177,8 +270,8 @@ public static class RawEvidenceReader
                 if (footerOffset - stream.Position
                     < RawEvidenceFormat.RecordHeaderLength)
                 {
-                    throw new InvalidDataException(
-                        "A raw evidence record header is truncated.");
+                    throw Failure(
+                        RawEvidenceReadFailureKind.TruncatedData);
                 }
 
                 await ReadAndHashExactlyAsync(
@@ -192,8 +285,8 @@ public static class RawEvidenceReader
                 if (stream.Position + record.PayloadLength
                     > footerOffset)
                 {
-                    throw new InvalidDataException(
-                        "A raw evidence payload crosses the footer boundary.");
+                    throw Failure(
+                        RawEvidenceReadFailureKind.MalformedStructure);
                 }
 
                 ValidateOrdering(
@@ -249,8 +342,10 @@ public static class RawEvidenceReader
         if (stream.Position != manifest.DataLengthBytes
             || stream.Length != manifest.DataLengthBytes)
         {
-            throw new InvalidDataException(
-                "Raw evidence contains trailing or missing data.");
+            throw Failure(
+                stream.Position < manifest.DataLengthBytes
+                    ? RawEvidenceReadFailureKind.TruncatedData
+                    : RawEvidenceReadFailureKind.TrailingData);
         }
 
         hash.AppendData(document.Preimage);
@@ -259,8 +354,8 @@ public static class RawEvidenceReader
                 actualDigest,
                 document.Digest))
         {
-            throw new InvalidDataException(
-                "The raw evidence SHA-256 integrity check failed.");
+            throw Failure(
+                RawEvidenceReadFailureKind.HashMismatch);
         }
     }
 
@@ -272,12 +367,19 @@ public static class RawEvidenceReader
             || !bytes[..4].SequenceEqual("REC1"u8)
             || bytes[33] != 0)
         {
-            throw new InvalidDataException(
-                "A raw evidence record header is invalid.");
+            throw Failure(
+                RawEvidenceReadFailureKind.MalformedStructure);
         }
 
-        var payloadLength = checked((int)
-            BinaryPrimitives.ReadUInt32LittleEndian(bytes[56..]));
+        var encodedPayloadLength =
+            BinaryPrimitives.ReadUInt32LittleEndian(bytes[56..]);
+        if (encodedPayloadLength > int.MaxValue)
+        {
+            throw Failure(
+                RawEvidenceReadFailureKind.DeclaredLimitViolation);
+        }
+
+        var payloadLength = (int)encodedPayloadLength;
         var recordLength =
             BinaryPrimitives.ReadUInt32LittleEndian(bytes[4..]);
         if (payloadLength is < 1
@@ -286,8 +388,10 @@ public static class RawEvidenceReader
                 != RawEvidenceFormat.RecordHeaderLength
                 + payloadLength)
         {
-            throw new InvalidDataException(
-                "A raw evidence record length is invalid.");
+            throw Failure(
+                payloadLength > maximumPayloadBytes
+                    ? RawEvidenceReadFailureKind.DeclaredLimitViolation
+                    : RawEvidenceReadFailureKind.MalformedStructure);
         }
 
         var sequence =
@@ -300,8 +404,8 @@ public static class RawEvidenceReader
             || arrival < 0
             || !IsValidUtcTicks(receivedUtcTicks))
         {
-            throw new InvalidDataException(
-                "A raw evidence record timestamp or sequence is invalid.");
+            throw Failure(
+                RawEvidenceReadFailureKind.MalformedStructure);
         }
 
         var addressFamily = bytes[32];
@@ -315,8 +419,8 @@ public static class RawEvidenceReader
             if (!bytes[40..52].SequenceEqual(new byte[12])
                 || scopeId != 0)
             {
-                throw new InvalidDataException(
-                    "A raw evidence IPv4 sender encoding is invalid.");
+                throw Failure(
+                    RawEvidenceReadFailureKind.MalformedStructure);
             }
 
             address = new IPAddress(bytes[36..40]);
@@ -327,8 +431,8 @@ public static class RawEvidenceReader
         }
         else
         {
-            throw new InvalidDataException(
-                "A raw evidence sender address family is invalid.");
+            throw Failure(
+                RawEvidenceReadFailureKind.MalformedStructure);
         }
 
         return new RawEvidenceRecordHeader(
@@ -346,9 +450,20 @@ public static class RawEvidenceReader
         RawEvidenceManifest manifest)
     {
         if (bytes.Length != RawEvidenceFormat.DataHeaderLength
-            || !bytes[..8].SequenceEqual("APXRAW1\0"u8)
-            || BinaryPrimitives.ReadUInt16LittleEndian(bytes[8..]) != 1
-            || BinaryPrimitives.ReadUInt16LittleEndian(bytes[10..])
+            || !bytes[..8].SequenceEqual("APXRAW1\0"u8))
+        {
+            throw Failure(
+                RawEvidenceReadFailureKind.MalformedStructure);
+        }
+
+        if (BinaryPrimitives.ReadUInt16LittleEndian(bytes[8..]) != 1)
+        {
+            throw Failure(
+                RawEvidenceReadFailureKind.UnsupportedVersion);
+        }
+
+        if (
+            BinaryPrimitives.ReadUInt16LittleEndian(bytes[10..])
                 != RawEvidenceFormat.DataHeaderLength
             || BinaryPrimitives.ReadUInt32LittleEndian(bytes[12..]) != 0
             || Encoding.ASCII.GetString(bytes[16..48])
@@ -361,8 +476,8 @@ public static class RawEvidenceReader
                 != manifest.Limits.MaximumPayloadBytes
             || BinaryPrimitives.ReadUInt32LittleEndian(bytes[68..]) != 0)
         {
-            throw new InvalidDataException(
-                "The raw evidence data header is invalid.");
+            throw Failure(
+                RawEvidenceReadFailureKind.MalformedStructure);
         }
     }
 
@@ -374,15 +489,15 @@ public static class RawEvidenceReader
         if (lastSequence.HasValue
             && record.Sequence <= lastSequence.Value)
         {
-            throw new InvalidDataException(
-                "Raw evidence record sequences are not strictly increasing.");
+            throw Failure(
+                RawEvidenceReadFailureKind.MalformedStructure);
         }
 
         if (lastArrival.HasValue
             && record.ArrivalTimestamp < lastArrival.Value)
         {
-            throw new InvalidDataException(
-                "Raw evidence arrival timestamps regress.");
+            throw Failure(
+                RawEvidenceReadFailureKind.MalformedStructure);
         }
     }
 
@@ -396,9 +511,20 @@ public static class RawEvidenceReader
         long? lastArrival)
     {
         if (bytes.Length != RawEvidenceFormat.FooterLength
-            || !bytes[..8].SequenceEqual("APXFTR1\0"u8)
-            || BinaryPrimitives.ReadUInt16LittleEndian(bytes[8..]) != 1
-            || BinaryPrimitives.ReadUInt16LittleEndian(bytes[10..])
+            || !bytes[..8].SequenceEqual("APXFTR1\0"u8))
+        {
+            throw Failure(
+                RawEvidenceReadFailureKind.MalformedStructure);
+        }
+
+        if (BinaryPrimitives.ReadUInt16LittleEndian(bytes[8..]) != 1)
+        {
+            throw Failure(
+                RawEvidenceReadFailureKind.UnsupportedVersion);
+        }
+
+        if (
+            BinaryPrimitives.ReadUInt16LittleEndian(bytes[10..])
                 != RawEvidenceFormat.FooterLength
             || BinaryPrimitives.ReadUInt32LittleEndian(bytes[12..]) != 0
             || BinaryPrimitives.ReadUInt64LittleEndian(bytes[16..])
@@ -414,8 +540,8 @@ public static class RawEvidenceReader
             || BinaryPrimitives.ReadInt64LittleEndian(bytes[56..])
                 != (lastArrival ?? -1))
         {
-            throw new InvalidDataException(
-                "The raw evidence footer does not match its records.");
+            throw Failure(
+                RawEvidenceReadFailureKind.MalformedStructure);
         }
     }
 
@@ -433,8 +559,8 @@ public static class RawEvidenceReader
             || manifest.FirstArrivalTimestamp != firstArrival
             || manifest.LastArrivalTimestamp != lastArrival)
         {
-            throw new InvalidDataException(
-                "The raw evidence manifest does not match its records.");
+            throw Failure(
+                RawEvidenceReadFailureKind.MalformedStructure);
         }
     }
 
@@ -455,8 +581,8 @@ public static class RawEvidenceReader
                 cancellationToken).ConfigureAwait(false);
             if (read == 0)
             {
-                throw new EndOfStreamException(
-                    "Raw evidence ended unexpectedly.");
+                throw Failure(
+                    RawEvidenceReadFailureKind.TruncatedData);
             }
 
             consumed = checked(consumed + read);
@@ -558,13 +684,19 @@ public sealed class RawEvidenceCapture : IAsyncDisposable
             return;
         }
 
-        if (_dataStream is not null)
+        var dataStream = _dataStream;
+        _dataStream = null;
+        var failures =
+            await RawEvidenceReadResourceCleanup.ReleaseAsync(
+                manifestStream: null,
+                dataStream: dataStream,
+                directory: _directory).ConfigureAwait(false);
+        if (failures.Count != 0)
         {
-            await _dataStream.DisposeAsync().ConfigureAwait(false);
-            _dataStream = null;
+            throw new AggregateException(
+                "Verified raw evidence handles could not be fully released.",
+                failures);
         }
-
-        _directory.Dispose();
     }
 }
 
@@ -574,3 +706,64 @@ internal readonly record struct RawEvidenceRecordHeader(
     DateTimeOffset ReceivedAtUtc,
     DatagramSender Sender,
     int PayloadLength);
+
+[SupportedOSPlatform("windows")]
+internal static class RawEvidenceReadResourceCleanup
+{
+    public static async Task<List<Exception>> ReleaseAsync(
+        FileStream? manifestStream,
+        FileStream? dataStream,
+        WindowsRawEvidenceDirectory? directory)
+    {
+        var failures = new List<Exception>();
+        await TryDisposeStreamAsync(
+            manifestStream,
+            failures).ConfigureAwait(false);
+        await TryDisposeStreamAsync(
+            dataStream,
+            failures).ConfigureAwait(false);
+        if (directory is not null)
+        {
+            try
+            {
+                directory.Dispose();
+            }
+            catch (Exception)
+            {
+                failures.Add(SanitizeCleanupFailure());
+            }
+        }
+
+        return failures;
+    }
+
+    private static async Task TryDisposeStreamAsync(
+        FileStream? stream,
+        List<Exception> failures)
+    {
+        if (stream is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await stream.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            failures.Add(SanitizeCleanupFailure());
+            try
+            {
+                stream.Dispose();
+            }
+            catch (Exception)
+            {
+                failures.Add(SanitizeCleanupFailure());
+            }
+        }
+    }
+
+    private static IOException SanitizeCleanupFailure() =>
+        new("A raw evidence read handle could not be released.");
+}

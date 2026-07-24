@@ -259,10 +259,9 @@ public sealed class RawReplayDatagramSource : IDatagramSource
                     }
                 }
 
-                await _channel.Writer.WriteAsync(
+                await PublishAsync(
                     envelope,
                     cancellationToken).ConfigureAwait(false);
-                Interlocked.Increment(ref _enqueued);
             }
         }
         catch (OperationCanceledException)
@@ -284,6 +283,25 @@ public sealed class RawReplayDatagramSource : IDatagramSource
                 }
             }
         }
+    }
+
+    private async Task PublishAsync(
+        DatagramEnvelope envelope,
+        CancellationToken cancellationToken)
+    {
+        while (await _channel.Writer.WaitToWriteAsync(
+                   cancellationToken).ConfigureAwait(false))
+        {
+            Interlocked.Increment(ref _enqueued);
+            if (_channel.Writer.TryWrite(envelope))
+            {
+                return;
+            }
+
+            Interlocked.Decrement(ref _enqueued);
+        }
+
+        throw new ChannelClosedException();
     }
 
     private async Task StopCoreAsync(Task pumpTask)

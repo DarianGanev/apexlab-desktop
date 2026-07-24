@@ -149,7 +149,7 @@ public sealed class ReplayCommandTests
             ReplayExitCode.InvalidEvidence,
             result.ExitCode);
         Assert.AreEqual(
-            "invalidEvidence",
+            "missingOrIncompleteEvidence",
             document.RootElement.GetProperty("status").GetString());
         Assert.DoesNotContain(
             captureId,
@@ -159,6 +159,71 @@ public sealed class ReplayCommandTests
             temporary.Paths.RootDirectory,
             result.Json,
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    [TestMethod]
+    public async Task ValidEvidenceWithUnregisteredProtocolIsDistinct()
+    {
+        using var temporary = TemporaryRoot.Create();
+        RawEvidenceCompletion completion;
+        await using (var writer = await RawEvidenceWriter.CreateAsync(
+                         temporary.Paths,
+                         RawEvidenceProtocolId.Parse(
+                             "unregistered-synthetic-v1"),
+                         new RawEvidenceLimits(
+                             minimumFreeSpaceBytes: 0),
+                         TestContext.CancellationToken))
+        {
+            completion = await writer.FinalizeAsync(
+                TestContext.CancellationToken);
+        }
+
+        var result = await ReplayCommand.ExecuteAsync(
+            [
+                "replay",
+                "--data-root", temporary.Paths.RootDirectory,
+                "--capture-id", completion.CaptureId.Value,
+            ],
+            TestContext.CancellationToken);
+        using var document = JsonDocument.Parse(result.Json);
+
+        Assert.AreEqual(
+            ReplayExitCode.UnsupportedProtocol,
+            result.ExitCode);
+        Assert.AreEqual(
+            "unsupportedProtocol",
+            document.RootElement.GetProperty("status").GetString());
+        Assert.DoesNotContain(
+            "unregistered-synthetic-v1",
+            result.Json,
+            StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task InvalidOversizedPathCannotEscapeJsonBoundary()
+    {
+        var privateFragment = new string('x', 40_000);
+
+        var result = await ReplayCommand.ExecuteAsync(
+            [
+                "replay",
+                "--data-root", $"C:\\{privateFragment}",
+                "--capture-id",
+                "00112233445546778899aabbccddeeff",
+            ],
+            TestContext.CancellationToken);
+        using var document = JsonDocument.Parse(result.Json);
+
+        Assert.AreEqual(
+            ReplayExitCode.InvalidArguments,
+            result.ExitCode);
+        Assert.AreEqual(
+            "invalidArguments",
+            document.RootElement.GetProperty("status").GetString());
+        Assert.DoesNotContain(
+            privateFragment,
+            result.Json,
+            StringComparison.Ordinal);
     }
 
     public TestContext TestContext { get; set; } = null!;

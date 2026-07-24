@@ -33,6 +33,10 @@ public sealed class RawReplayDatagramSourceTests
                            TestContext.CancellationToken))
         {
             received.Add(envelope);
+            Assert.IsGreaterThanOrEqualTo(
+                received.Count,
+                source.Counters.SourceEnqueued,
+                "A replay envelope must be accounted before publication.");
         }
         await source.StopAsync(TestContext.CancellationToken);
 

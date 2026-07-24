@@ -3,7 +3,7 @@ using System.Text.Json;
 using ApexLab.Application.Capture;
 using ApexLab.Application.Storage;
 using ApexLab.Persistence.Raw;
-using ApexLab.Protocols.F125;
+using ApexLab.Telemetry.Abstractions.Protocol;
 
 namespace ApexLab.Replay.Replay;
 
@@ -31,22 +31,36 @@ internal static class ReplayCommand
         {
             paths = ApplicationPaths.FromRoot(parsed.DataRoot);
         }
-        catch (ArgumentException)
+        catch (Exception exception)
+            when (exception is ArgumentException
+                or NotSupportedException
+                or PathTooLongException
+                or IOException
+                or UnauthorizedAccessException)
         {
             return Status(
                 ReplayExitCode.InvalidArguments,
                 "invalidArguments");
         }
 
-        var adapter = new F125TelemetryProtocolAdapter();
+        ITelemetryProtocolAdapter? adapter = null;
         CaptureIngestionCoordinator? coordinator = null;
         try
         {
             var capture = await RawEvidenceReader.OpenAsync(
                 paths,
                 parsed.CaptureId,
-                RawEvidenceProtocolId.Parse(adapter.ProtocolId),
                 cancellationToken).ConfigureAwait(false);
+            if (!ReplayProtocolRegistry.TryResolve(
+                    capture.Completion.ProtocolId.Value,
+                    out adapter))
+            {
+                await capture.DisposeAsync().ConfigureAwait(false);
+                return Status(
+                    ReplayExitCode.UnsupportedProtocol,
+                    "unsupportedProtocol");
+            }
+
             await using var source = new RawReplayDatagramSource(
                 capture,
                 new RawReplayOptions(
@@ -74,10 +88,16 @@ internal static class ReplayCommand
                 : Report(
                     ReplayExitCode.Interrupted,
                     "interrupted",
-                    adapter.ProtocolId,
+                    adapter!.ProtocolId,
                     parsed,
                     recordCount: null,
                     coordinator.Counters);
+        }
+        catch (RawEvidenceReadException exception)
+        {
+            return Status(
+                ReplayExitCode.InvalidEvidence,
+                StatusFor(exception.Kind));
         }
         catch (Exception exception)
             when (exception is InvalidDataException
@@ -96,6 +116,31 @@ internal static class ReplayCommand
                 "unexpectedFailure");
         }
     }
+
+    private static string StatusFor(
+        RawEvidenceReadFailureKind kind) =>
+        kind switch
+        {
+            RawEvidenceReadFailureKind.MissingOrIncomplete =>
+                "missingOrIncompleteEvidence",
+            RawEvidenceReadFailureKind.UnsafePath =>
+                "unsafeEvidencePath",
+            RawEvidenceReadFailureKind.UnsupportedVersion =>
+                "unsupportedEvidenceVersion",
+            RawEvidenceReadFailureKind.MalformedStructure =>
+                "malformedEvidence",
+            RawEvidenceReadFailureKind.DeclaredLimitViolation =>
+                "evidenceLimitViolation",
+            RawEvidenceReadFailureKind.TruncatedData =>
+                "truncatedEvidence",
+            RawEvidenceReadFailureKind.TrailingData =>
+                "trailingEvidence",
+            RawEvidenceReadFailureKind.HashMismatch =>
+                "evidenceHashMismatch",
+            RawEvidenceReadFailureKind.UnsupportedProtocol =>
+                "unsupportedProtocol",
+            _ => "invalidEvidence",
+        };
 
     private static ReplayCommandResult Report(
         ReplayExitCode exitCode,
@@ -154,6 +199,7 @@ internal enum ReplayExitCode
     Success = 0,
     InvalidArguments = 2,
     InvalidEvidence = 3,
+    UnsupportedProtocol = 4,
     Interrupted = 6,
     UnexpectedFailure = 7,
 }

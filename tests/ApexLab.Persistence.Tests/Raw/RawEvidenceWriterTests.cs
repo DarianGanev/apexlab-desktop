@@ -218,6 +218,34 @@ public sealed class RawEvidenceWriterTests
         AssertNoEvidenceFiles(temporary.Paths);
     }
 
+    [TestMethod]
+    public async Task StorageFailuresDoNotDisclosePrivatePaths()
+    {
+        using var temporary = TemporaryEvidenceRoot.Create();
+
+        var exception = await Assert.ThrowsExactlyAsync<IOException>(
+            () => RawEvidenceWriter.CreateForTestingAsync(
+                temporary.Paths,
+                CaptureId,
+                ProtocolId,
+                new RawEvidenceLimits(minimumFreeSpaceBytes: 0),
+                stopwatchFrequency: 1_000,
+                new QueueTimeProvider(CreatedAt),
+                () => throw new IOException(
+                    temporary.Paths.RootDirectory),
+                TestContext.CancellationToken));
+
+        Assert.DoesNotContain(
+            temporary.Paths.RootDirectory,
+            exception.ToString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            CaptureId.Value,
+            exception.ToString(),
+            StringComparison.Ordinal);
+        AssertNoStagingFiles(temporary.Paths);
+    }
+
     public TestContext TestContext { get; set; } = null!;
 
     private static Task<RawEvidenceWriter> CreateWriterAsync(
