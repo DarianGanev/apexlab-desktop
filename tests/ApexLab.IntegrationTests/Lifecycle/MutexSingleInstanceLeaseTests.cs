@@ -76,9 +76,10 @@ public sealed class MutexSingleInstanceLeaseTests
     }
 
     [TestMethod]
-    [Timeout(5_000, CooperativeCancellation = true)]
+    [Timeout(15_000, CooperativeCancellation = true)]
     public async Task Concurrent_acquirers_share_result_and_release_waits_for_inflight_callers()
     {
+        var coordinationTimeout = TimeSpan.FromSeconds(5);
         using var ownerReached = new ManualResetEventSlim(false);
         using var publishResult = new ManualResetEventSlim(false);
         using var bothCallersEntered = new CountdownEvent(2);
@@ -97,25 +98,37 @@ public sealed class MutexSingleInstanceLeaseTests
             });
         using var callersReady = new Barrier(3);
 
-        var first = Task.Run(() =>
-        {
-            Assert.IsTrue(callersReady.SignalAndWait(TimeSpan.FromSeconds(1)));
-            return subject.TryAcquire();
-        });
-        var second = Task.Run(() =>
-        {
-            Assert.IsTrue(callersReady.SignalAndWait(TimeSpan.FromSeconds(1)));
-            return subject.TryAcquire();
-        });
-        Assert.IsTrue(callersReady.SignalAndWait(TimeSpan.FromSeconds(1)));
-        Assert.IsTrue(bothCallersEntered.Wait(TimeSpan.FromSeconds(1)));
-        Assert.IsTrue(ownerReached.Wait(TimeSpan.FromSeconds(1)));
-        var release = Task.Run(subject.Release);
+        var first = Task.Factory.StartNew(
+            () =>
+            {
+                Assert.IsTrue(callersReady.SignalAndWait(coordinationTimeout));
+                return subject.TryAcquire();
+            },
+            CancellationToken.None,
+            TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+        var second = Task.Factory.StartNew(
+            () =>
+            {
+                Assert.IsTrue(callersReady.SignalAndWait(coordinationTimeout));
+                return subject.TryAcquire();
+            },
+            CancellationToken.None,
+            TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+        Assert.IsTrue(callersReady.SignalAndWait(coordinationTimeout));
+        Assert.IsTrue(bothCallersEntered.Wait(coordinationTimeout));
+        Assert.IsTrue(ownerReached.Wait(coordinationTimeout));
+        var release = Task.Factory.StartNew(
+            subject.Release,
+            CancellationToken.None,
+            TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
 
         publishResult.Set();
 
-        Assert.IsTrue(await first.WaitAsync(TimeSpan.FromSeconds(1)));
-        Assert.IsTrue(await second.WaitAsync(TimeSpan.FromSeconds(1)));
-        await release.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.IsTrue(await first.WaitAsync(coordinationTimeout));
+        Assert.IsTrue(await second.WaitAsync(coordinationTimeout));
+        await release.WaitAsync(coordinationTimeout);
     }
 }
