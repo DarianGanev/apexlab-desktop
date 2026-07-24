@@ -91,7 +91,9 @@ public sealed class ProbeAggregatorTests
             root.GetProperty("headers").GetProperty("frameRegressions").GetInt64());
         Assert.AreEqual(
             4L,
-            root.GetProperty("headers").GetProperty("overallFrameGaps").GetInt64());
+            root.GetProperty("headers")
+                .GetProperty("overallFrameSkippedIdentifierValues")
+                .GetInt64());
         Assert.AreEqual(
             2,
             root.GetProperty("playerIndices").GetProperty("playerMinimum").GetByte());

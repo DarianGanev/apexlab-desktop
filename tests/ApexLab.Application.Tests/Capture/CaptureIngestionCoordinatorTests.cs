@@ -135,6 +135,130 @@ public sealed class CaptureIngestionCoordinatorTests
     }
 
     [TestMethod]
+    public async Task AdapterFailureStillStopsAndAccountsForUnreadPacket()
+    {
+        var processingFailure = new InvalidDataException("adapter failed");
+        var source = new FiniteDatagramSource(
+        [
+            CreateEnvelope(1, IPAddress.Loopback, 0),
+        ]);
+        var subject = new CaptureIngestionCoordinator(
+            source,
+            new ThrowingProtocolAdapter(processingFailure),
+            SenderPolicy.LoopbackOnly);
+
+        var thrown = await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            () => subject.RunAsync(TestContext.CancellationToken));
+
+        Assert.AreSame(processingFailure, thrown);
+        Assert.AreEqual(1, source.StopCalls);
+        Assert.AreEqual(0L, subject.Counters.Classifier.SourceDequeued);
+        Assert.AreEqual(
+            1L,
+            subject.Counters.Classifier.ClassifierAbandonedOnInterrupt);
+        Assert.IsTrue(subject.Counters.HasCompleteSourceAccounting);
+    }
+
+    [TestMethod]
+    public async Task ObserverFailurePreservesClassifiedOutcomeAndStillStops()
+    {
+        var observerFailure = new InvalidDataException("observer failed");
+        var source = new FiniteDatagramSource(
+        [
+            CreateEnvelope(
+                1,
+                IPAddress.Loopback,
+                (byte)TelemetryPacketClassification.Compatible),
+        ]);
+        var subject = new CaptureIngestionCoordinator(
+            source,
+            new MarkerProtocolAdapter(),
+            SenderPolicy.LoopbackOnly,
+            new ThrowingObserver(observerFailure));
+
+        var thrown = await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            () => subject.RunAsync(TestContext.CancellationToken));
+
+        Assert.AreSame(observerFailure, thrown);
+        Assert.AreEqual(1, source.StopCalls);
+        Assert.AreEqual(1L, subject.Counters.Classifier.Compatible);
+        Assert.AreEqual(
+            0L,
+            subject.Counters.Classifier.ClassifierAbandonedOnInterrupt);
+        Assert.IsTrue(subject.Counters.HasCompleteSourceAccounting);
+    }
+
+    [TestMethod]
+    public async Task ProcessingAndStopFailuresAreBothReported()
+    {
+        var processingFailure = new InvalidDataException("adapter failed");
+        var stopFailure = new IOException("stop failed");
+        var source = new FiniteDatagramSource(
+            [
+                CreateEnvelope(1, IPAddress.Loopback, 0),
+            ],
+            stopFailure);
+        var subject = new CaptureIngestionCoordinator(
+            source,
+            new ThrowingProtocolAdapter(processingFailure),
+            SenderPolicy.LoopbackOnly);
+
+        var thrown = await Assert.ThrowsExactlyAsync<AggregateException>(
+            () => subject.RunAsync(TestContext.CancellationToken));
+
+        CollectionAssert.AreEquivalent(
+            new Exception[] { processingFailure, stopFailure },
+            thrown.InnerExceptions.ToArray());
+        Assert.AreEqual(1, source.StopCalls);
+        Assert.IsTrue(subject.Counters.HasCompleteSourceAccounting);
+    }
+
+    [TestMethod]
+    public async Task CountersRemainValidWhenAdmissionAndClassificationAdvanceDuringSnapshot()
+    {
+        using var secondObserved = new ManualResetEventSlim();
+        var firstObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var source = new SnapshotRaceDatagramSource(secondObserved);
+        var observer = new RecordingObserver(
+            observation =>
+            {
+                if (observation.Sequence == 1)
+                {
+                    firstObserved.TrySetResult();
+                }
+                else if (observation.Sequence == 2)
+                {
+                    secondObserved.Set();
+                }
+            });
+        var subject = new CaptureIngestionCoordinator(
+            source,
+            new MarkerProtocolAdapter(),
+            SenderPolicy.LoopbackOnly,
+            observer);
+        var runTask = subject.RunAsync(TestContext.CancellationToken);
+
+        await firstObserved.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.CancellationToken);
+
+        var snapshot = await Task.Run(
+            () => subject.Counters,
+            TestContext.CancellationToken);
+        source.Complete();
+        await runTask.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(1L, snapshot.Source.SourceEnqueued);
+        Assert.AreEqual(1L, snapshot.Classifier.SourceDequeued);
+        Assert.AreEqual(0L, snapshot.EnqueuedAwaitingClassifier);
+        Assert.AreEqual(2L, subject.Counters.Source.SourceEnqueued);
+        Assert.AreEqual(2L, subject.Counters.Classifier.SourceDequeued);
+    }
+
+    [TestMethod]
     public void ObservationContractCannotExposePayloadOrSenderIdentity()
     {
         var propertyNames = typeof(CapturePacketObservation)
@@ -166,12 +290,16 @@ public sealed class CaptureIngestionCoordinatorTests
     private sealed class FiniteDatagramSource : IDatagramSource
     {
         private readonly DatagramEnvelope[] _envelopes;
+        private readonly Exception? _stopFailure;
         private readonly Channel<DatagramEnvelope> _channel =
             Channel.CreateUnbounded<DatagramEnvelope>();
 
-        public FiniteDatagramSource(IEnumerable<DatagramEnvelope> envelopes)
+        public FiniteDatagramSource(
+            IEnumerable<DatagramEnvelope> envelopes,
+            Exception? stopFailure = null)
         {
             _envelopes = envelopes.ToArray();
+            _stopFailure = stopFailure;
         }
 
         public ChannelReader<DatagramEnvelope> Output => _channel.Reader;
@@ -205,7 +333,82 @@ public sealed class CaptureIngestionCoordinatorTests
         {
             StopCalls++;
             _channel.Writer.TryComplete();
+            return _stopFailure is null
+                ? Task.CompletedTask
+                : Task.FromException(_stopFailure);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            _channel.Writer.TryComplete();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class SnapshotRaceDatagramSource : IDatagramSource
+    {
+        private readonly ManualResetEventSlim _secondObserved;
+        private readonly Channel<DatagramEnvelope> _channel =
+            Channel.CreateUnbounded<DatagramEnvelope>();
+        private long _sourceEnqueued;
+        private int _snapshotRaceTriggered;
+
+        public SnapshotRaceDatagramSource(ManualResetEventSlim secondObserved)
+        {
+            _secondObserved = secondObserved;
+        }
+
+        public ChannelReader<DatagramEnvelope> Output => _channel.Reader;
+
+        public DatagramSourceCounters Counters
+        {
+            get
+            {
+                var pointInTimeEnqueued = Interlocked.Read(ref _sourceEnqueued);
+                if (pointInTimeEnqueued == 1
+                    && Interlocked.Exchange(ref _snapshotRaceTriggered, 1) == 0)
+                {
+                    Interlocked.Increment(ref _sourceEnqueued);
+                    Assert.IsTrue(
+                        _channel.Writer.TryWrite(
+                            CreateEnvelope(
+                                2,
+                                IPAddress.Loopback,
+                                (byte)TelemetryPacketClassification.Compatible)));
+                    Assert.IsTrue(_secondObserved.Wait(TimeSpan.FromSeconds(5)));
+                }
+
+                return new(
+                    datagramsObserved: pointInTimeEnqueued,
+                    sourceEnqueued: pointInTimeEnqueued,
+                    sourceDroppedFull: 0,
+                    sourceRejectedOversized: 0,
+                    socketErrors: 0);
+            }
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _sourceEnqueued);
+            Assert.IsTrue(
+                _channel.Writer.TryWrite(
+                    CreateEnvelope(
+                        1,
+                        IPAddress.Loopback,
+                        (byte)TelemetryPacketClassification.Compatible)));
             return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken = default)
+        {
+            _channel.Writer.TryComplete();
+            return Task.CompletedTask;
+        }
+
+        public void Complete()
+        {
+            _channel.Writer.TryComplete();
         }
 
         public ValueTask DisposeAsync()
@@ -258,6 +461,25 @@ public sealed class CaptureIngestionCoordinatorTests
         }
     }
 
+    private sealed class ThrowingProtocolAdapter : ITelemetryProtocolAdapter
+    {
+        private readonly Exception _failure;
+
+        public ThrowingProtocolAdapter(Exception failure)
+        {
+            _failure = failure;
+        }
+
+        public string ProtocolId => "synthetic-throwing";
+
+        public int HeaderLength => 1;
+
+        public TelemetryPacketResult Inspect(ReadOnlySpan<byte> datagram)
+        {
+            throw _failure;
+        }
+    }
+
     private sealed class RecordingObserver : ICapturePacketObserver
     {
         private readonly Action<CapturePacketObservation>? _onObservation;
@@ -274,6 +496,21 @@ public sealed class CaptureIngestionCoordinatorTests
         {
             Observations.Add(observation);
             _onObservation?.Invoke(observation);
+        }
+    }
+
+    private sealed class ThrowingObserver : ICapturePacketObserver
+    {
+        private readonly Exception _failure;
+
+        public ThrowingObserver(Exception failure)
+        {
+            _failure = failure;
+        }
+
+        public void Observe(CapturePacketObservation observation)
+        {
+            throw _failure;
         }
     }
 }

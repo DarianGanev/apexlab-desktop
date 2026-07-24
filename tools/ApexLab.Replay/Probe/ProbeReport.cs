@@ -59,9 +59,9 @@ internal sealed record ProbeSequenceReport(
 internal sealed record ProbeHeaderReport(
     int SessionUidCardinality,
     long SessionTimeRegressions,
-    long FrameGaps,
+    long FrameSkippedIdentifierValues,
     long FrameRegressions,
-    long OverallFrameGaps,
+    long OverallFrameSkippedIdentifierValues,
     long OverallFrameRegressions);
 
 internal sealed record ProbePlayerIndexReport(

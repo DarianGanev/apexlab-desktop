@@ -29,8 +29,17 @@ public sealed class CaptureIngestionCoordinator
         _observer = observer;
     }
 
-    public CaptureIngestionCounters Counters =>
-        new(_source.Counters, _ledger.Snapshot());
+    public CaptureIngestionCounters Counters
+    {
+        get
+        {
+            // Classification can advance only after source admission. Reading the
+            // ledger first therefore yields a compatible pair of point-in-time
+            // snapshots even if admission advances before source counters are read.
+            var classifier = _ledger.Snapshot();
+            return new(_source.Counters, classifier);
+        }
+    }
 
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {

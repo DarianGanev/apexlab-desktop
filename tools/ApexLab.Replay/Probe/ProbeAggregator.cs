@@ -22,9 +22,9 @@ internal sealed class ProbeAggregator : ICapturePacketObserver
     private long _monotonicTimestampRegressions;
     private long _utcTimestampRegressions;
     private long _sessionTimeRegressions;
-    private long _frameGaps;
+    private long _frameSkippedIdentifierValues;
     private long _frameRegressions;
-    private long _overallFrameGaps;
+    private long _overallFrameSkippedIdentifierValues;
     private long _overallFrameRegressions;
     private byte? _playerMinimum;
     private byte? _playerMaximum;
@@ -115,9 +115,9 @@ internal sealed class ProbeAggregator : ICapturePacketObserver
                 new ProbeHeaderReport(
                     _sessionUids.Count,
                     _sessionTimeRegressions,
-                    _frameGaps,
+                    _frameSkippedIdentifierValues,
                     _frameRegressions,
-                    _overallFrameGaps,
+                    _overallFrameSkippedIdentifierValues,
                     _overallFrameRegressions),
                 new ProbePlayerIndexReport(
                     _playerMinimum,
@@ -219,12 +219,12 @@ internal sealed class ProbeAggregator : ICapturePacketObserver
             RecordFrameDelta(
                 prior.FrameIdentifier,
                 header.FrameIdentifier,
-                ref _frameGaps,
+                ref _frameSkippedIdentifierValues,
                 ref _frameRegressions);
             RecordFrameDelta(
                 prior.OverallFrameIdentifier,
                 header.OverallFrameIdentifier,
-                ref _overallFrameGaps,
+                ref _overallFrameSkippedIdentifierValues,
                 ref _overallFrameRegressions);
         }
 
@@ -250,7 +250,7 @@ internal sealed class ProbeAggregator : ICapturePacketObserver
     private static void RecordFrameDelta(
         uint previous,
         uint current,
-        ref long gaps,
+        ref long skippedIdentifierValues,
         ref long regressions)
     {
         if (current < previous)
@@ -259,7 +259,8 @@ internal sealed class ProbeAggregator : ICapturePacketObserver
         }
         else if ((ulong)current > (ulong)previous + 1)
         {
-            gaps = checked(gaps + current - previous - 1);
+            skippedIdentifierValues = checked(
+                skippedIdentifierValues + current - previous - 1);
         }
     }
 

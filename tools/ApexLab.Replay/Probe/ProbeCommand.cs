@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using ApexLab.Application.Capture;
 using ApexLab.Protocols.F125;
+using ApexLab.Telemetry.Abstractions.Capture;
 using ApexLab.Telemetry.Udp;
 
 namespace ApexLab.Replay.Probe;
@@ -12,6 +14,20 @@ internal static class ProbeCommand
         IReadOnlyList<string> arguments,
         CancellationToken interruptionToken)
     {
+        return await ExecuteAsync(
+                arguments,
+                interruptionToken,
+                static options => new UdpDatagramSource(options))
+            .ConfigureAwait(false);
+    }
+
+    internal static async Task<ProbeCommandResult> ExecuteAsync(
+        IReadOnlyList<string> arguments,
+        CancellationToken interruptionToken,
+        Func<UdpDatagramSourceOptions, IDatagramSource> sourceFactory)
+    {
+        ArgumentNullException.ThrowIfNull(sourceFactory);
+
         if (!ProbeArguments.TryParse(arguments, out var parsed))
         {
             return new(
@@ -23,46 +39,58 @@ internal static class ProbeCommand
             parsed.Port,
             parsed.ChannelCapacity,
             parsed.MaximumDatagramBytes);
-        await using var source = new UdpDatagramSource(options);
         var adapter = new F125TelemetryProtocolAdapter();
         var aggregator = new ProbeAggregator();
-        var coordinator = new CaptureIngestionCoordinator(
-            source,
-            adapter,
-            SenderPolicy.LoopbackOnly,
-            aggregator);
+        CaptureIngestionCoordinator? coordinator = null;
         var stopwatch = Stopwatch.StartNew();
 
         try
         {
-            var runTask = coordinator.RunAsync(interruptionToken);
-            var durationTask = Task.Delay(parsed.Duration, interruptionToken);
-            var firstCompleted = await Task.WhenAny(runTask, durationTask)
-                .ConfigureAwait(false);
+            await using (var source = sourceFactory(options))
+            {
+                coordinator = new CaptureIngestionCoordinator(
+                    source,
+                    adapter,
+                    SenderPolicy.LoopbackOnly,
+                    aggregator);
+                var runTask = coordinator.RunAsync(interruptionToken);
+                var durationTask = Task.Delay(parsed.Duration, interruptionToken);
+                var firstCompleted = await Task.WhenAny(runTask, durationTask)
+                    .ConfigureAwait(false);
 
-            if (ReferenceEquals(firstCompleted, runTask))
-            {
-                await runTask.ConfigureAwait(false);
-            }
-            else if (interruptionToken.IsCancellationRequested)
-            {
-                await AwaitInterruptedAsync(runTask).ConfigureAwait(false);
-                return BuildResult(
-                    ProbeExitCode.Interrupted,
-                    "interrupted",
+                if (ReferenceEquals(firstCompleted, runTask))
+                {
+                    await runTask.ConfigureAwait(false);
+                }
+                else if (interruptionToken.IsCancellationRequested)
+                {
+                    await AwaitInterruptedAsync(runTask).ConfigureAwait(false);
+                    return BuildResult(
+                        ProbeExitCode.Interrupted,
+                        "interrupted",
+                        adapter.ProtocolId,
+                        stopwatch.Elapsed,
+                        coordinator.Counters,
+                        aggregator);
+                }
+                else
+                {
+                    await StopAndObserveRunAsync(
+                            () => source.StopAsync(),
+                            runTask)
+                        .ConfigureAwait(false);
+                }
+
+                return BuildCaptureOutcome(
                     adapter.ProtocolId,
                     stopwatch.Elapsed,
                     coordinator.Counters,
                     aggregator);
             }
-            else
-            {
-                await source.StopAsync().ConfigureAwait(false);
-                await runTask.ConfigureAwait(false);
-            }
         }
         catch (OperationCanceledException)
-            when (interruptionToken.IsCancellationRequested)
+            when (interruptionToken.IsCancellationRequested
+                  && coordinator is not null)
         {
             return BuildResult(
                 ProbeExitCode.Interrupted,
@@ -88,15 +116,51 @@ internal static class ProbeCommand
         {
             stopwatch.Stop();
         }
+    }
 
-        var counters = coordinator.Counters;
+    internal static async Task StopAndObserveRunAsync(
+        Func<Task> stopOperation,
+        Task runTask)
+    {
+        ArgumentNullException.ThrowIfNull(stopOperation);
+        ArgumentNullException.ThrowIfNull(runTask);
+
+        Exception? stopFailure = null;
+        Exception? runFailure = null;
+        try
+        {
+            await stopOperation().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            stopFailure = exception;
+        }
+
+        try
+        {
+            await runTask.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            runFailure = exception;
+        }
+
+        ThrowFailures(stopFailure, runFailure);
+    }
+
+    private static ProbeCommandResult BuildCaptureOutcome(
+        string protocolId,
+        TimeSpan elapsed,
+        CaptureIngestionCounters counters,
+        ProbeAggregator aggregator)
+    {
         if (counters.Source.DatagramsObserved == 0)
         {
             return BuildResult(
                 ProbeExitCode.NoTraffic,
                 "noTraffic",
-                adapter.ProtocolId,
-                stopwatch.Elapsed,
+                protocolId,
+                elapsed,
                 counters,
                 aggregator);
         }
@@ -106,8 +170,8 @@ internal static class ProbeCommand
             return BuildResult(
                 ProbeExitCode.IncompatibleOnlyTraffic,
                 "incompatibleOnlyTraffic",
-                adapter.ProtocolId,
-                stopwatch.Elapsed,
+                protocolId,
+                elapsed,
                 counters,
                 aggregator);
         }
@@ -115,8 +179,8 @@ internal static class ProbeCommand
         return BuildResult(
             ProbeExitCode.Success,
             "success",
-            adapter.ProtocolId,
-            stopwatch.Elapsed,
+            protocolId,
+            elapsed,
             counters,
             aggregator);
     }
@@ -130,6 +194,26 @@ internal static class ProbeCommand
         catch (OperationCanceledException)
         {
         }
+    }
+
+    private static void ThrowFailures(Exception? stopFailure, Exception? runFailure)
+    {
+        if (stopFailure is null && runFailure is null)
+        {
+            return;
+        }
+
+        if (stopFailure is null)
+        {
+            ExceptionDispatchInfo.Capture(runFailure!).Throw();
+        }
+
+        if (runFailure is null || ReferenceEquals(stopFailure, runFailure))
+        {
+            ExceptionDispatchInfo.Capture(stopFailure!).Throw();
+        }
+
+        throw new AggregateException(stopFailure!, runFailure!);
     }
 
     private static ProbeCommandResult BuildResult(

@@ -1,7 +1,10 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
+using System.Threading.Channels;
+using ApexLab.Application.Capture;
 using ApexLab.Replay.Probe;
+using ApexLab.Telemetry.Abstractions.Capture;
 
 namespace ApexLab.IntegrationTests.Probe;
 
@@ -123,5 +126,80 @@ public sealed class ProbeArgumentsTests
                 .GetInt64());
     }
 
+    [TestMethod]
+    public async Task TimedShutdownObservesRunFailureEvenWhenStopFailsFirst()
+    {
+        var stopFailure = new InvalidOperationException("stop failed");
+        var runFailure = new IOException("run failed");
+        var runCompletion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var shutdown = ProbeCommand.StopAndObserveRunAsync(
+            () => Task.FromException(stopFailure),
+            runCompletion.Task);
+
+        Assert.IsFalse(shutdown.IsCompleted);
+        runCompletion.SetException(runFailure);
+
+        var combined = await Assert.ThrowsExactlyAsync<AggregateException>(
+            () => shutdown);
+        CollectionAssert.AreEquivalent(
+            new Exception[] { stopFailure, runFailure },
+            combined.InnerExceptions.ToArray());
+    }
+
+    [TestMethod]
+    public async Task DisposalFailureReturnsUnexpectedFailureContract()
+    {
+        var result = await ProbeCommand.ExecuteAsync(
+            ["probe"],
+            TestContext.CancellationToken,
+            _ => new DisposalFailureSource());
+        using var document = JsonDocument.Parse(result.Json);
+
+        Assert.AreEqual(ProbeExitCode.UnexpectedFailure, result.ExitCode);
+        CollectionAssert.AreEquivalent(
+            new[] { "schemaVersion", "status" },
+            document.RootElement
+                .EnumerateObject()
+                .Select(property => property.Name)
+                .ToArray());
+        Assert.AreEqual(
+            "unexpectedFailure",
+            document.RootElement.GetProperty("status").GetString());
+    }
+
     public TestContext TestContext { get; set; } = null!;
+
+    private sealed class DisposalFailureSource : IDatagramSource
+    {
+        private readonly Channel<DatagramEnvelope> _output =
+            Channel.CreateUnbounded<DatagramEnvelope>();
+
+        public DisposalFailureSource()
+        {
+            _output.Writer.TryComplete();
+        }
+
+        public ChannelReader<DatagramEnvelope> Output => _output.Reader;
+
+        public DatagramSourceCounters Counters => default;
+
+        public Task StartAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.FromException(
+                new IOException("synthetic disposal failure"));
+        }
+    }
 }
