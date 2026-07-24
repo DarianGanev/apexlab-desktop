@@ -133,6 +133,52 @@ internal sealed class WindowsRawEvidenceDirectory : IDisposable
         }
     }
 
+    public FileStream? TryOpenExistingReadOnly(string leafName)
+    {
+        ThrowIfDisposed();
+        ValidateLeafName(leafName);
+        var expectedPath = Path.Combine(_capturesPath, leafName);
+        var handle = WindowsRawEvidenceNative.CreateFile(
+            expectedPath,
+            WindowsRawEvidenceNative.GenericRead,
+            WindowsRawEvidenceNative.ShareRead,
+            IntPtr.Zero,
+            WindowsRawEvidenceNative.OpenExisting,
+            WindowsRawEvidenceNative.FileAttributeNormal
+            | WindowsRawEvidenceNative.FileFlagOpenReparsePoint
+            | WindowsRawEvidenceNative.FileFlagOverlapped,
+            IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            var error = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            if (error is WindowsRawEvidenceNative.ErrorFileNotFound
+                or WindowsRawEvidenceNative.ErrorPathNotFound)
+            {
+                return null;
+            }
+
+            throw NewWin32Exception(
+                $"open {leafName}",
+                error);
+        }
+
+        try
+        {
+            ValidateRegularSingleLinkFile(handle, expectedPath);
+            return new FileStream(
+                handle,
+                FileAccess.Read,
+                bufferSize: 4_096,
+                isAsync: true);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+    }
+
     public RawEvidenceFileIdentity GetIdentity(
         SafeFileHandle fileHandle)
     {
@@ -422,14 +468,23 @@ internal sealed class WindowsRawEvidenceDirectory : IDisposable
     {
         if (handle.IsInvalid)
         {
+            var error = Marshal.GetLastWin32Error();
             handle.Dispose();
-            throw NewWin32Exception(operation);
+            throw NewWin32Exception(operation, error);
         }
     }
 
     private static Win32Exception NewWin32Exception(string operation)
     {
-        var error = Marshal.GetLastWin32Error();
+        return NewWin32Exception(
+            operation,
+            Marshal.GetLastWin32Error());
+    }
+
+    private static Win32Exception NewWin32Exception(
+        string operation,
+        int error)
+    {
         return new Win32Exception(
             error,
             $"Windows could not {operation} (error {error}).");
@@ -470,6 +525,8 @@ internal static partial class WindowsRawEvidenceNative
     public const int FileIdInfoClass = 18;
     public const int FileRenameInfoClass = 3;
     public const int FileDispositionInfoClass = 4;
+    public const int ErrorFileNotFound = 2;
+    public const int ErrorPathNotFound = 3;
 
     [LibraryImport(
         "kernel32.dll",
