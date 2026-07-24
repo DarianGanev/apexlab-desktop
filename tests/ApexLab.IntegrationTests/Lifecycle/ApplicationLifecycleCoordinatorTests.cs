@@ -439,9 +439,16 @@ public sealed class ApplicationLifecycleCoordinatorTests
     {
         var events = new List<string>();
         using var blocker = new ManualResetEventSlim(false);
+        var stopOperationThread = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var operations = new RecordingOperations(events)
         {
-            StopAction = _ => { blocker.Wait(); return Task.CompletedTask; },
+            StopAction = _ =>
+            {
+                stopOperationThread.TrySetResult(Thread.CurrentThread.IsThreadPoolThread);
+                blocker.Wait();
+                return Task.CompletedTask;
+            },
         };
         var subject = new ApplicationLifecycleCoordinator(
             new RecordingLease(events, available: true), operations, TimeSpan.FromMilliseconds(75));
@@ -455,9 +462,14 @@ public sealed class ApplicationLifecycleCoordinatorTests
                 TaskCreationOptions.DenyChildAttach,
                 TaskScheduler.Default);
             var stopTask = await invocation.WaitAsync(TimeSpan.FromMilliseconds(500));
+            var operationUsedThreadPool = await stopOperationThread.Task
+                .WaitAsync(TimeSpan.FromMilliseconds(500));
             var result = await stopTask.WaitAsync(TimeSpan.FromMilliseconds(500));
             Assert.AreEqual(LifecycleStopOutcome.Interrupted, result.Outcome);
             Assert.IsTrue(result.LeaseRetainedForDeferredCleanup);
+            Assert.IsFalse(
+                operationUsedThreadPool,
+                "Synchronous lifecycle work must not occupy a ThreadPool worker needed by timeout continuations.");
         }
         finally
         {

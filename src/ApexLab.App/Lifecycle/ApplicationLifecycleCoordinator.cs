@@ -653,10 +653,20 @@ public sealed class ApplicationLifecycleCoordinator
     }
 
     private static Task InvokeOperationAsync(Func<CancellationToken, Task> operation, CancellationToken token) =>
-        Task.Run(() => operation(token), CancellationToken.None);
+        Task.Factory.StartNew(
+                () => operation(token),
+                CancellationToken.None,
+                TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
+                TaskScheduler.Default)
+            .Unwrap();
 
     private static Task<T> InvokeOperationAsync<T>(Func<CancellationToken, Task<T>> operation, CancellationToken token) =>
-        Task.Run(() => operation(token), CancellationToken.None);
+        Task.Factory.StartNew(
+                () => operation(token),
+                CancellationToken.None,
+                TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
+                TaskScheduler.Default)
+            .Unwrap();
 
     private static Task<Exception?> RequestCancellationAsync(
         CancellationTokenSource cancellation,
