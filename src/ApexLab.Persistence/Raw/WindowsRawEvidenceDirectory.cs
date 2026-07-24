@@ -208,6 +208,39 @@ internal sealed class WindowsRawEvidenceDirectory : IDisposable
             finalPath);
     }
 
+    public void DeleteOpenFile(SafeFileHandle fileHandle)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(fileHandle);
+        var disposition = new WindowsRawEvidenceNative.FileDispositionInfo
+        {
+            DeleteFile = 1,
+        };
+        var size = Marshal.SizeOf<
+            WindowsRawEvidenceNative.FileDispositionInfo>();
+        var buffer = Marshal.AllocHGlobal(size);
+        try
+        {
+            Marshal.StructureToPtr(
+                disposition,
+                buffer,
+                fDeleteOld: false);
+            if (!WindowsRawEvidenceNative.SetFileInformationByHandle(
+                    fileHandle,
+                    WindowsRawEvidenceNative.FileDispositionInfoClass,
+                    buffer,
+                    checked((uint)size)))
+            {
+                throw NewWin32Exception(
+                    "mark raw evidence for deletion");
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -436,6 +469,7 @@ internal static partial class WindowsRawEvidenceNative
     public const int FileAttributeTagInfoClass = 9;
     public const int FileIdInfoClass = 18;
     public const int FileRenameInfoClass = 3;
+    public const int FileDispositionInfoClass = 4;
 
     [LibraryImport(
         "kernel32.dll",
@@ -506,5 +540,11 @@ internal static partial class WindowsRawEvidenceNative
         public ulong VolumeSerialNumber;
         public ulong FileIdLow;
         public ulong FileIdHigh;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct FileDispositionInfo
+    {
+        public byte DeleteFile;
     }
 }

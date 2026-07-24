@@ -11,7 +11,6 @@ namespace ApexLab.Persistence.Raw;
 [SupportedOSPlatform("windows")]
 public sealed class RawEvidenceWriter : IRawEvidenceStore
 {
-    private readonly ApplicationPaths _paths;
     private readonly TimeProvider _timeProvider;
     private readonly Func<long> _availableFreeSpace;
     private readonly long _stopwatchFrequency;
@@ -29,11 +28,9 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
     private long? _lastSequence;
     private long? _firstArrivalTimestamp;
     private long? _lastArrivalTimestamp;
-    private bool _dataRenamed;
-    private bool _manifestRenamed;
+    private int _disposeStarted;
 
     private RawEvidenceWriter(
-        ApplicationPaths paths,
         RawEvidenceCaptureId captureId,
         RawEvidenceProtocolId protocolId,
         RawEvidenceLimits limits,
@@ -44,7 +41,6 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
         WindowsRawEvidenceDirectory directory,
         FileStream dataStream)
     {
-        _paths = paths;
         CaptureId = captureId;
         ProtocolId = protocolId;
         Limits = limits;
@@ -131,7 +127,6 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
                 cancellationToken).ConfigureAwait(false);
 
             return new RawEvidenceWriter(
-                paths,
                 captureId,
                 protocolId,
                 limits,
@@ -142,17 +137,33 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
                 directory,
                 dataStream);
         }
-        catch
+        catch (Exception primary)
         {
+            Exception? cleanupFailure = null;
             if (dataStream is not null)
             {
+                try
+                {
+                    directory!.DeleteOpenFile(
+                        dataStream.SafeFileHandle);
+                }
+                catch (Exception exception)
+                {
+                    cleanupFailure = exception;
+                }
+
                 await dataStream.DisposeAsync().ConfigureAwait(false);
             }
 
-            TryDelete(Path.Combine(
-                paths.RawCapturesDirectory,
-                stagingName));
             directory?.Dispose();
+            if (cleanupFailure is not null)
+            {
+                throw new AggregateException(
+                    "Raw evidence creation and cleanup failed.",
+                    primary,
+                    cleanupFailure);
+            }
+
             throw;
         }
     }
@@ -242,15 +253,15 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+        {
+            return;
+        }
+
         Task<RawEvidenceCompletion>? finalization;
         lock (_finalizationGate)
         {
             finalization = _finalizationTask;
-            if (_state == WriterState.Disposed)
-            {
-                return;
-            }
-
             if (finalization is null)
             {
                 _state = WriterState.Disposed;
@@ -268,14 +279,16 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
                 // Finalization already performed and reported its cleanup.
             }
 
+            _state = WriterState.Disposed;
+            _writeGate.Dispose();
             return;
         }
 
         await _writeGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            var cleanupErrors = MarkOpenFilesForDeletion();
             await CloseStreamsAsync().ConfigureAwait(false);
-            var cleanupErrors = CleanupOwnedFiles();
             _directory.Dispose();
             if (cleanupErrors.Count != 0)
             {
@@ -298,6 +311,12 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
         {
             try
             {
+                if (_state != WriterState.Finalizing)
+                {
+                    throw new InvalidOperationException(
+                        "The raw evidence writer faulted before finalization acquired ownership.");
+                }
+
                 var finalizedAt = RequireUtc(
                     _timeProvider.GetUtcNow(),
                     "Evidence finalization time");
@@ -360,11 +379,9 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
                 _directory.RenameOpenFile(
                     _dataStream.SafeFileHandle,
                     DataFinalName(CaptureId));
-                _dataRenamed = true;
                 _directory.RenameOpenFile(
                     _manifestStream.SafeFileHandle,
                     ManifestFinalName(CaptureId));
-                _manifestRenamed = true;
 
                 await CloseStreamsAsync().ConfigureAwait(false);
                 _directory.Dispose();
@@ -380,8 +397,8 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
             catch (Exception primary)
             {
                 _state = WriterState.Faulted;
+                var cleanupErrors = MarkOpenFilesForDeletion();
                 await CloseStreamsAsync().ConfigureAwait(false);
-                var cleanupErrors = CleanupOwnedFiles();
                 _directory.Dispose();
                 if (cleanupErrors.Count == 0)
                 {
@@ -520,66 +537,30 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
         }
     }
 
-    private List<Exception> CleanupOwnedFiles()
+    private List<Exception> MarkOpenFilesForDeletion()
     {
         var failures = new List<Exception>();
-        TryDeleteOwned(
-            Path.Combine(
-                _paths.RawCapturesDirectory,
-                DataStagingName(CaptureId)),
-            shouldDelete: !_dataRenamed,
-            failures);
-        TryDeleteOwned(
-            Path.Combine(
-                _paths.RawCapturesDirectory,
-                ManifestStagingName(CaptureId)),
-            shouldDelete: !_manifestRenamed,
-            failures);
-        TryDeleteOwned(
-            Path.Combine(
-                _paths.RawCapturesDirectory,
-                DataFinalName(CaptureId)),
-            shouldDelete: _dataRenamed && !_manifestRenamed,
-            failures);
-        TryDeleteOwned(
-            Path.Combine(
-                _paths.RawCapturesDirectory,
-                ManifestFinalName(CaptureId)),
-            shouldDelete: _manifestRenamed
-                && _state != WriterState.Finalized,
-            failures);
+        TryMarkForDeletion(_manifestStream, failures);
+        TryMarkForDeletion(_dataStream, failures);
         return failures;
     }
 
-    private static void TryDeleteOwned(
-        string path,
-        bool shouldDelete,
+    private void TryMarkForDeletion(
+        FileStream? stream,
         List<Exception> failures)
     {
-        if (!shouldDelete)
+        if (stream is null)
         {
             return;
         }
 
         try
         {
-            File.Delete(path);
+            _directory.DeleteOpenFile(stream.SafeFileHandle);
         }
         catch (Exception exception)
         {
             failures.Add(exception);
-        }
-    }
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch
-        {
-            // Creation is already failing; no writer can report cleanup.
         }
     }
 

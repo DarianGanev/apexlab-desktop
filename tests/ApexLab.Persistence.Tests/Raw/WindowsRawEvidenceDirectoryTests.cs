@@ -108,6 +108,26 @@ public sealed class WindowsRawEvidenceDirectoryTests
     }
 
     [TestMethod]
+    public void HandleDeletionRemovesTheValidatedOpenFileOnClose()
+    {
+        using var temporary = TemporaryEvidenceRoot.Create();
+        using var directory = WindowsRawEvidenceDirectory.Open(
+            temporary.Paths);
+        const string stagingName =
+            "00112233445546778899aabbccddeeff.apxraw.partial";
+        var path = Path.Combine(
+            temporary.Paths.RawCapturesDirectory,
+            stagingName);
+
+        using (var stream = directory.CreateNewFile(stagingName))
+        {
+            directory.DeleteOpenFile(stream.SafeFileHandle);
+        }
+
+        Assert.IsFalse(File.Exists(path));
+    }
+
+    [TestMethod]
     public void RejectsUnsafeLeafNamesBeforeNativeOpen()
     {
         using var temporary = TemporaryEvidenceRoot.Create();
