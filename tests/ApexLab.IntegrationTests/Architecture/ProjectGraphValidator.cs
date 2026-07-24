@@ -42,6 +42,11 @@ internal static class ProjectGraphValidator
             ["ApexLab.Protocols.F125"] = ProjectSet(
                 "ApexLab.Domain",
                 "ApexLab.Telemetry.Abstractions"),
+            ["ApexLab.Replay"] = ProjectSet(
+                "ApexLab.Application",
+                "ApexLab.Persistence",
+                "ApexLab.Protocols.F125",
+                "ApexLab.Telemetry"),
             ["ApexLab.Telemetry"] = ProjectSet(
                 "ApexLab.Application",
                 "ApexLab.Domain",
@@ -68,6 +73,11 @@ internal static class ProjectGraphValidator
             ["ApexLab.Protocols.F125"] = ProjectSet(
                 "ApexLab.Domain",
                 "ApexLab.Telemetry.Abstractions"),
+            ["ApexLab.Replay"] = ProjectSet(
+                "ApexLab.Application",
+                "ApexLab.Persistence",
+                "ApexLab.Protocols.F125",
+                "ApexLab.Telemetry"),
             ["ApexLab.Telemetry"] = ProjectSet(
                 "ApexLab.Application",
                 "ApexLab.Domain",

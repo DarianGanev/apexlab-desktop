@@ -8,8 +8,8 @@ This is a personal software-engineering diploma project, not a startup MVP. Its 
 
 The native Windows foundation is executable and tested: it includes the WPF shell, validated local
 settings, single-instance lifecycle coordination, safe SQLite schema migration, headless package
-smoke testing, and reproducible verification/packaging scripts. F1 telemetry product features are
-the next milestone.
+smoke testing, reproducible verification/packaging scripts, strict base-F1-25 packet-envelope
+validation, bounded loopback UDP reception, and a privacy-safe live traffic probe.
 
 - [Product and engineering design](docs/superpowers/specs/2026-07-19-apexlab-desktop-design.md)
 - [30-week roadmap](docs/apexlab-roadmap.md)
@@ -56,6 +56,27 @@ Run the desktop shell from source with:
 ```powershell
 dotnet run --project src/ApexLab.App/ApexLab.App.csproj -c Release
 ```
+
+## F1 25 traffic probe
+
+Configure F1 25 for base F1 25 UDP mode at `127.0.0.1:20777`, then run a short offline Time Trial
+while this command is active:
+
+```powershell
+dotnet run --project tools/ApexLab.Replay/ApexLab.Replay.csproj -c Release -- probe --duration-seconds 30
+```
+
+The probe uses the same bounded UDP source, sender policy, F1 adapter, and ingestion coordinator
+planned for the desktop capture workflow. It retains no packet payload and prints aggregate JSON
+only: classifier counts, packet ID/version/length counts, rate buckets, session-UID cardinality,
+sequence/timestamp regressions, skipped frame-identifier values, frame regressions, and player-index
+ranges. Skipped frame identifiers are descriptive deltas per packet family, not packet-loss claims.
+The probe never prints an actual session UID, sender endpoint, local path, username, or payload byte.
+
+Exit codes are `0` for compatible traffic, `2` for invalid arguments, `3` for bind failure, `4` for
+no traffic, `5` for incompatible-only traffic, `6` for interruption, and `7` for an unexpected
+failure. Optional arguments are `--port`, `--capacity`, `--max-datagram-bytes`, and
+`--duration-seconds`.
 
 ## Package and smoke test
 

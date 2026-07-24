@@ -11,4 +11,5 @@ public enum TelemetryPacketClassification
     UnsupportedPacketVersion,
     InvalidPacketLength,
     ExcludedPrivacyPacket,
+    UnexpectedSender,
 }

@@ -45,11 +45,11 @@ public sealed class CaptureCountersTests
             unknownPacketId: 1,
             unsupportedPacketVersion: 1,
             invalidPacketLength: 1,
-            classifierAbandonedOnInterrupt: 2);
+            classifierAbandonedOnTermination: 2);
 
         Assert.AreEqual(10L, counters.SourceDequeued);
         Assert.AreEqual(4L, counters.Compatible);
-        Assert.AreEqual(2L, counters.ClassifierAbandonedOnInterrupt);
+        Assert.AreEqual(2L, counters.ClassifierAbandonedOnTermination);
         Assert.ThrowsExactly<ArgumentException>(
             () => CreateClassifier(
                 sourceDequeued: 11,
@@ -126,15 +126,15 @@ public sealed class CaptureCountersTests
             CreateClassifier(
                 sourceDequeued: 10,
                 compatible: 4,
-                classifierAbandonedOnInterrupt: 2),
+                classifierAbandonedOnTermination: 2),
             new EvidenceSinkCounters(2, 1, 0, 1, 0, 2));
 
         Assert.IsTrue(clean.HasCompleteSourceAccounting);
-        Assert.IsFalse(clean.Classifier.WasAbandonedOnInterrupt);
+        Assert.IsFalse(clean.Classifier.WasAbandonedOnTermination);
         Assert.IsFalse(clean.Evidence.HasPendingWrites);
         Assert.IsTrue(clean.AllWrittenRecordsAreFinalized);
         Assert.IsTrue(interrupted.HasCompleteSourceAccounting);
-        Assert.IsTrue(interrupted.Classifier.WasAbandonedOnInterrupt);
+        Assert.IsTrue(interrupted.Classifier.WasAbandonedOnTermination);
         Assert.IsTrue(interrupted.Evidence.HasDeferredCleanup);
         Assert.IsFalse(interrupted.AllWrittenRecordsAreFinalized);
     }
@@ -148,7 +148,7 @@ public sealed class CaptureCountersTests
                 CreateClassifier(
                     sourceDequeued: 10,
                     compatible: 4,
-                    classifierAbandonedOnInterrupt: 1),
+                    classifierAbandonedOnTermination: 1),
                 new EvidenceSinkCounters(3, 1, 0, 0, 0, 3)));
         Assert.ThrowsExactly<ArgumentException>(
             () => new CaptureCounters(
@@ -161,7 +161,7 @@ public sealed class CaptureCountersTests
                 CreateClassifier(
                     sourceDequeued: 10,
                     compatible: 4,
-                    classifierAbandonedOnInterrupt: 1),
+                    classifierAbandonedOnTermination: 1),
                 new EvidenceSinkCounters(3, 1, 0, 0, 0, 3)));
         Assert.ThrowsExactly<ArgumentException>(
             () => new CaptureCounters(
@@ -185,6 +185,33 @@ public sealed class CaptureCountersTests
         Assert.IsTrue(counters.AllWrittenRecordsAreFinalized);
     }
 
+    [TestMethod]
+    public void IngestionSnapshotDistinguishesActiveAndAbandonedBacklog()
+    {
+        var source = new DatagramSourceCounters(10, 10, 0, 0, 0);
+        var active = new CaptureIngestionCounters(
+            source,
+            CreateClassifier(sourceDequeued: 6, compatible: 2));
+        var interrupted = new CaptureIngestionCounters(
+            source,
+            CreateClassifier(
+                sourceDequeued: 6,
+                compatible: 2,
+                classifierAbandonedOnTermination: 4));
+
+        Assert.AreEqual(4L, active.EnqueuedAwaitingClassifier);
+        Assert.IsFalse(active.HasCompleteSourceAccounting);
+        Assert.AreEqual(0L, interrupted.EnqueuedAwaitingClassifier);
+        Assert.IsTrue(interrupted.HasCompleteSourceAccounting);
+        Assert.ThrowsExactly<ArgumentException>(
+            () => new CaptureIngestionCounters(
+                source,
+                CreateClassifier(
+                    sourceDequeued: 10,
+                    compatible: 10,
+                    classifierAbandonedOnTermination: 1)));
+    }
+
     private static DatagramClassificationCounters CreateClassifier(
         long sourceDequeued,
         long compatible,
@@ -196,7 +223,7 @@ public sealed class CaptureCountersTests
         long invalidPacketLength = 0,
         long excludedPrivacyPacket = 0,
         long unexpectedSender = 0,
-        long classifierAbandonedOnInterrupt = 0) =>
+        long classifierAbandonedOnTermination = 0) =>
         new(
             sourceDequeued,
             compatible,
@@ -217,5 +244,5 @@ public sealed class CaptureCountersTests
             invalidPacketLength,
             excludedPrivacyPacket,
             unexpectedSender,
-            classifierAbandonedOnInterrupt);
+            classifierAbandonedOnTermination);
 }
