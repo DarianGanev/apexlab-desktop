@@ -215,6 +215,9 @@ public sealed class RawEvidenceReaderTests
         "limit",
         RawEvidenceReadFailureKind.DeclaredLimitViolation)]
     [DataRow(
+        "payload-limit-overflow",
+        RawEvidenceReadFailureKind.DeclaredLimitViolation)]
+    [DataRow(
         "truncated",
         RawEvidenceReadFailureKind.TruncatedData)]
     [DataRow(
@@ -311,6 +314,20 @@ public sealed class RawEvidenceReaderTests
                     text = text.Replace(
                         "\"maximumFileBytes\":536870912",
                         "\"maximumFileBytes\":136",
+                        StringComparison.Ordinal);
+                    await File.WriteAllTextAsync(
+                        manifestPath,
+                        text,
+                        new UTF8Encoding(
+                            encoderShouldEmitUTF8Identifier: false));
+                    break;
+                }
+            case "payload-limit-overflow":
+                {
+                    var text = await File.ReadAllTextAsync(manifestPath);
+                    text = text.Replace(
+                        "\"maximumPayloadBytes\":65507",
+                        "\"maximumPayloadBytes\":2147483648",
                         StringComparison.Ordinal);
                     await File.WriteAllTextAsync(
                         manifestPath,

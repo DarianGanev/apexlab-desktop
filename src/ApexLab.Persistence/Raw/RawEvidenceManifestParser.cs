@@ -86,9 +86,16 @@ internal static class RawEvidenceManifestParser
             var maximumDurationMilliseconds = RequireInt64(
                 limitsElement,
                 "maximumDurationMilliseconds");
-            var maximumPayloadBytes = checked((int)RequireInt64(
+            var maximumPayloadBytesValue = RequireInt64(
                 limitsElement,
-                "maximumPayloadBytes"));
+                "maximumPayloadBytes");
+            if (maximumPayloadBytesValue is < int.MinValue or > int.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(
+                    "maximumPayloadBytes");
+            }
+
+            var maximumPayloadBytes = (int)maximumPayloadBytesValue;
             var limits = new RawEvidenceLimits(
                 TimeSpan.FromMilliseconds(
                     maximumDurationMilliseconds),
