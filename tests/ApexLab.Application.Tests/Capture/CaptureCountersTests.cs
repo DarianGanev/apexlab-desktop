@@ -185,6 +185,33 @@ public sealed class CaptureCountersTests
         Assert.IsTrue(counters.AllWrittenRecordsAreFinalized);
     }
 
+    [TestMethod]
+    public void IngestionSnapshotDistinguishesActiveAndAbandonedBacklog()
+    {
+        var source = new DatagramSourceCounters(10, 10, 0, 0, 0);
+        var active = new CaptureIngestionCounters(
+            source,
+            CreateClassifier(sourceDequeued: 6, compatible: 2));
+        var interrupted = new CaptureIngestionCounters(
+            source,
+            CreateClassifier(
+                sourceDequeued: 6,
+                compatible: 2,
+                classifierAbandonedOnInterrupt: 4));
+
+        Assert.AreEqual(4L, active.EnqueuedAwaitingClassifier);
+        Assert.IsFalse(active.HasCompleteSourceAccounting);
+        Assert.AreEqual(0L, interrupted.EnqueuedAwaitingClassifier);
+        Assert.IsTrue(interrupted.HasCompleteSourceAccounting);
+        Assert.ThrowsExactly<ArgumentException>(
+            () => new CaptureIngestionCounters(
+                source,
+                CreateClassifier(
+                    sourceDequeued: 10,
+                    compatible: 10,
+                    classifierAbandonedOnInterrupt: 1)));
+    }
+
     private static DatagramClassificationCounters CreateClassifier(
         long sourceDequeued,
         long compatible,
