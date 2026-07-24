@@ -94,6 +94,45 @@ public sealed class CaptureIngestionCoordinatorTests
     }
 
     [TestMethod]
+    public async Task EvidenceStoreReceivesOnlyCompatibleDatagrams()
+    {
+        var compatible = CreateEnvelope(
+            1,
+            IPAddress.Loopback,
+            (byte)TelemetryPacketClassification.Compatible);
+        var excluded = CreateEnvelope(
+            2,
+            IPAddress.Loopback,
+            (byte)TelemetryPacketClassification.ExcludedPrivacyPacket);
+        var evidence = new RecordingEvidenceStore();
+        var subject = new CaptureIngestionCoordinator(
+            new FiniteDatagramSource([compatible, excluded]),
+            new MarkerProtocolAdapter(),
+            SenderPolicy.LoopbackOnly,
+            observer: null,
+            evidence);
+
+        await subject.RunAsync(TestContext.CancellationToken);
+
+        Assert.HasCount(1, evidence.Envelopes);
+        Assert.AreSame(compatible, evidence.Envelopes[0]);
+        Assert.AreEqual(1L, subject.Counters.Classifier.Compatible);
+        Assert.AreEqual(1L, subject.Counters.Classifier.ExcludedPrivacyPacket);
+
+        var staged = subject.CaptureCounters;
+        Assert.AreEqual(1L, staged.Evidence.SinkWritten);
+        Assert.AreEqual(1L, staged.Evidence.StagedRecords);
+        Assert.AreEqual(0L, staged.Evidence.FinalizedRecords);
+
+        var completion = await subject.FinalizeEvidenceAsync(
+            TestContext.CancellationToken);
+        var finalized = subject.CaptureCounters;
+        Assert.AreEqual(1L, completion.RecordCount);
+        Assert.AreEqual(1L, finalized.Evidence.FinalizedRecords);
+        Assert.AreEqual(0L, finalized.Evidence.StagedRecords);
+    }
+
+    [TestMethod]
     public async Task CancellationTransfersTheUnreadBacklogToAbandonment()
     {
         using var interruption = new CancellationTokenSource();
@@ -134,6 +173,47 @@ public sealed class CaptureIngestionCoordinatorTests
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(
             () => subject.RunAsync(TestContext.CancellationToken));
+    }
+
+    [TestMethod]
+    public async Task StartedCompletesOnlyAfterTheSourceBinds()
+    {
+        var source = new ControlledStartDatagramSource();
+        var subject = new CaptureIngestionCoordinator(
+            source,
+            new MarkerProtocolAdapter(),
+            SenderPolicy.LoopbackOnly);
+
+        var runTask = subject.RunAsync(TestContext.CancellationToken);
+
+        Assert.IsFalse(subject.Started.IsCompleted);
+        source.CompleteStart();
+        await subject.Started.WaitAsync(TestContext.CancellationToken);
+        Assert.IsFalse(runTask.IsCompleted);
+
+        source.CompleteOutput();
+        await runTask.WaitAsync(TestContext.CancellationToken);
+    }
+
+    [TestMethod]
+    public async Task StartedReportsTheSameTypedStartupFailureAsRun()
+    {
+        var startupFailure = new IOException("bind failed");
+        var subject = new CaptureIngestionCoordinator(
+            new FiniteDatagramSource([], startFailure: startupFailure),
+            new MarkerProtocolAdapter(),
+            SenderPolicy.LoopbackOnly);
+
+        var runTask = subject.RunAsync(TestContext.CancellationToken);
+
+        var startedFailure =
+            await Assert.ThrowsExactlyAsync<CaptureSourceStartupException>(
+                () => subject.Started);
+        var runFailure =
+            await Assert.ThrowsExactlyAsync<CaptureSourceStartupException>(
+                () => runTask);
+        Assert.AreSame(startupFailure, startedFailure.InnerException);
+        Assert.AreSame(startupFailure, runFailure.InnerException);
     }
 
     [TestMethod]
@@ -447,6 +527,77 @@ public sealed class CaptureIngestionCoordinatorTests
             _channel.Writer.TryComplete();
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class ControlledStartDatagramSource : IDatagramSource
+    {
+        private readonly TaskCompletionSource _startCompletion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Channel<DatagramEnvelope> _channel =
+            Channel.CreateUnbounded<DatagramEnvelope>();
+
+        public ChannelReader<DatagramEnvelope> Output => _channel.Reader;
+
+        public DatagramSourceCounters Counters => default;
+
+        public Task StartAsync(CancellationToken cancellationToken = default) =>
+            _startCompletion.Task.WaitAsync(cancellationToken);
+
+        public Task StopAsync(CancellationToken cancellationToken = default)
+        {
+            _channel.Writer.TryComplete();
+            return Task.CompletedTask;
+        }
+
+        public void CompleteStart() => _startCompletion.TrySetResult();
+
+        public void CompleteOutput() => _channel.Writer.TryComplete();
+
+        public ValueTask DisposeAsync()
+        {
+            _channel.Writer.TryComplete();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingEvidenceStore : IRawEvidenceStore
+    {
+        public RawEvidenceCaptureId CaptureId { get; } =
+            RawEvidenceCaptureId.Parse(
+                "00112233445546778899aabbccddeeff");
+
+        public RawEvidenceProtocolId ProtocolId { get; } =
+            RawEvidenceProtocolId.Parse("synthetic-v1");
+
+        public RawEvidenceLimits Limits { get; } =
+            new(minimumFreeSpaceBytes: 0);
+
+        public List<DatagramEnvelope> Envelopes { get; } = [];
+
+        public ValueTask WriteAsync(
+            DatagramEnvelope envelope,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Envelopes.Add(envelope);
+            return ValueTask.CompletedTask;
+        }
+
+        public Task<RawEvidenceCompletion> FinalizeAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(
+                new RawEvidenceCompletion(
+                    CaptureId,
+                    ProtocolId,
+                    Envelopes.Count,
+                    RawEvidenceLimits.MinimumFileBytes,
+                    new string('0', 64),
+                    DateTimeOffset.UnixEpoch));
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class MarkerProtocolAdapter : ITelemetryProtocolAdapter

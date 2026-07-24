@@ -16,14 +16,66 @@ internal sealed class DatagramClassificationLedger
     private long _excludedPrivacyPacket;
     private long _unexpectedSender;
     private long _classifierAbandonedOnTermination;
+    private long _sinkWritten;
+    private long _sinkWriteFailed;
+    private long _sinkPending;
+    private long _finalizedRecords;
+    private long _stagedRecords;
 
-    public void Record(TelemetryPacketClassification classification)
+    public void Record(
+        TelemetryPacketClassification classification,
+        bool trackCompatibleEvidence = false)
     {
         lock (_gate)
         {
             ref var counter = ref CounterFor(classification);
             counter = checked(counter + 1);
             _sourceDequeued = checked(_sourceDequeued + 1);
+            if (trackCompatibleEvidence
+                && classification == TelemetryPacketClassification.Compatible)
+            {
+                _sinkPending = checked(_sinkPending + 1);
+            }
+        }
+    }
+
+    public void RecordEvidenceWritten()
+    {
+        lock (_gate)
+        {
+            RequirePendingEvidence();
+            _sinkPending--;
+            _sinkWritten = checked(_sinkWritten + 1);
+            _stagedRecords = checked(_stagedRecords + 1);
+        }
+    }
+
+    public void RecordEvidenceWriteFailed()
+    {
+        lock (_gate)
+        {
+            RequirePendingEvidence();
+            _sinkPending--;
+            _sinkWriteFailed = checked(_sinkWriteFailed + 1);
+        }
+    }
+
+    public void RecordEvidenceFinalized(long recordCount)
+    {
+        CounterMath.RequireNonNegative(recordCount, nameof(recordCount));
+        lock (_gate)
+        {
+            if (_sinkPending != 0
+                || _finalizedRecords != 0
+                || _stagedRecords != recordCount
+                || _sinkWritten != recordCount)
+            {
+                throw new InvalidOperationException(
+                    "Evidence can be finalized only after every successful write is staged.");
+            }
+
+            _finalizedRecords = _stagedRecords;
+            _stagedRecords = 0;
         }
     }
 
@@ -46,18 +98,25 @@ internal sealed class DatagramClassificationLedger
     {
         lock (_gate)
         {
-            return new(
-                _sourceDequeued,
-                _compatible,
-                _malformedHeader,
-                _unsupportedFormat,
-                _unsupportedYear,
-                _unknownPacketId,
-                _unsupportedPacketVersion,
-                _invalidPacketLength,
-                _excludedPrivacyPacket,
-                _unexpectedSender,
-                _classifierAbandonedOnTermination);
+            return CreateClassificationSnapshot();
+        }
+    }
+
+    public (
+        DatagramClassificationCounters Classifier,
+        EvidenceSinkCounters Evidence) CaptureSnapshot()
+    {
+        lock (_gate)
+        {
+            return (
+                CreateClassificationSnapshot(),
+                new EvidenceSinkCounters(
+                    _sinkWritten,
+                    _sinkWriteFailed,
+                    _sinkPending,
+                    sinkPendingDeferredCleanup: 0,
+                    _finalizedRecords,
+                    _stagedRecords));
         }
     }
 
@@ -88,6 +147,29 @@ internal sealed class DatagramClassificationLedger
                     nameof(classification),
                     classification,
                     "A known classifier outcome is required.");
+        }
+    }
+
+    private DatagramClassificationCounters CreateClassificationSnapshot() =>
+        new(
+            _sourceDequeued,
+            _compatible,
+            _malformedHeader,
+            _unsupportedFormat,
+            _unsupportedYear,
+            _unknownPacketId,
+            _unsupportedPacketVersion,
+            _invalidPacketLength,
+            _excludedPrivacyPacket,
+            _unexpectedSender,
+            _classifierAbandonedOnTermination);
+
+    private void RequirePendingEvidence()
+    {
+        if (_sinkPending == 0)
+        {
+            throw new InvalidOperationException(
+                "An evidence completion requires a pending compatible datagram.");
         }
     }
 }
