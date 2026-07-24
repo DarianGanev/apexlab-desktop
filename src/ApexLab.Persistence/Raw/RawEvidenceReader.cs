@@ -576,9 +576,26 @@ public static class RawEvidenceReader
         var consumed = 0;
         while (consumed < destination.Length)
         {
-            var read = await stream.ReadAsync(
-                destination[consumed..],
-                cancellationToken).ConfigureAwait(false);
+            int read;
+            try
+            {
+                read = await stream.ReadAsync(
+                    destination[consumed..],
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+                when (exception is IOException
+                    or UnauthorizedAccessException)
+            {
+                throw Failure(
+                    RawEvidenceReadFailureKind.UnsafePath);
+            }
+
             if (read == 0)
             {
                 throw Failure(
@@ -649,7 +666,18 @@ public sealed class RawEvidenceCapture : IAsyncDisposable
         }
 
         var stream = _dataStream!;
-        stream.Position = RawEvidenceFormat.DataHeaderLength;
+        try
+        {
+            stream.Position = RawEvidenceFormat.DataHeaderLength;
+        }
+        catch (Exception exception)
+            when (exception is IOException
+                or UnauthorizedAccessException)
+        {
+            throw new RawEvidenceReadException(
+                RawEvidenceReadFailureKind.UnsafePath);
+        }
+
         var recordHeader =
             new byte[RawEvidenceFormat.RecordHeaderLength];
         for (long index = 0;
