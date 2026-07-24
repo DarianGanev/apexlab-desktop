@@ -88,7 +88,7 @@ public sealed class AppCompositionTests
         var codeBehind = File.ReadAllText(Path.Combine(repositoryRoot, "src", "ApexLab.App", "MainWindow.xaml.cs"));
 
         Assert.IsFalse(xaml.Contains("<Window.DataContext>", StringComparison.Ordinal));
-        StringAssert.Contains(codeBehind, "MainWindow(ShellViewModel viewModel)");
+        StringAssert.Contains(codeBehind, "CaptureViewModel capture");
         StringAssert.Contains(codeBehind, "DataContext = viewModel;");
     }
 

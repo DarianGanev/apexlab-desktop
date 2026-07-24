@@ -38,16 +38,20 @@ public sealed class ShellXamlContractTests
     }
 
     [TestMethod]
-    public void Shell_has_visible_focus_text_status_and_honest_foundation_copy()
+    public void Shell_has_visible_focus_and_honest_capture_controls()
     {
         var xaml = File.ReadAllText(GetAppFile("MainWindow.xaml"));
 
         StringAssert.Contains(xaml, "FocusVisualStyle");
         StringAssert.Contains(xaml, "KeyboardNavigation.TabNavigation");
-        StringAssert.Contains(xaml, "FOUNDATION • OFFLINE");
-        StringAssert.Contains(xaml, "Milestone v0.1");
-        StringAssert.Contains(xaml, "No telemetry is being captured in this foundation build.");
-        Assert.IsFalse(xaml.Contains("Start Capture", StringComparison.OrdinalIgnoreCase));
+        StringAssert.Contains(xaml, "LOCAL • F1 25");
+        StringAssert.Contains(xaml, "Milestone v0.2");
+        StringAssert.Contains(xaml, "UDP On");
+        StringAssert.Contains(xaml, "127.0.0.1");
+        StringAssert.Contains(xaml, "20777");
+        StringAssert.Contains(xaml, "Capture.ArmCommand");
+        StringAssert.Contains(xaml, "Capture.StopCommand");
+        StringAssert.Contains(xaml, "Capture.StatusText");
         Assert.IsFalse(xaml.Contains("Analyze", StringComparison.OrdinalIgnoreCase));
     }
 

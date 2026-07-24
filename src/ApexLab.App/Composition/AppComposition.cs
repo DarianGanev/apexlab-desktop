@@ -68,6 +68,7 @@ public static class AppComposition
         services.AddSingleton<IHostedService>(
             provider =>
                 provider.GetRequiredService<CaptureLifecycleOperations>());
+        services.AddSingleton<CaptureViewModel>();
         services.AddSingleton<ShellViewModel>();
         services.AddSingleton<MainWindow>();
     }

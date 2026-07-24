@@ -10,6 +10,7 @@ using System.Windows.Input;
 using System.Windows.Threading;
 using ApexLab.App;
 using ApexLab.App.Shell;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace ApexLab.IntegrationTests.Shell;
 
@@ -64,16 +65,18 @@ public sealed class MainWindowRuntimeTests
         MainWindow? window = null;
         try
         {
-            var viewModel = new ShellViewModel();
-            window = new MainWindow(viewModel)
-            {
-                Width = 1100,
-                Height = 700,
-                WindowStartupLocation = WindowStartupLocation.Manual,
-                Left = -10_000,
-                Top = -10_000,
-                ShowInTaskbar = false,
-            };
+            using var host = AppComposition.CreateHost(
+                Path.Combine(
+                    Path.GetTempPath(),
+                    $"apexlab-window-{Guid.NewGuid():N}"));
+            window = host.Services.GetRequiredService<MainWindow>();
+            var viewModel = (ShellViewModel)window.DataContext;
+            window.Width = 1100;
+            window.Height = 700;
+            window.WindowStartupLocation = WindowStartupLocation.Manual;
+            window.Left = -10_000;
+            window.Top = -10_000;
+            window.ShowInTaskbar = false;
 
             window.Show();
             window.UpdateLayout();
