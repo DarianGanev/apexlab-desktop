@@ -122,6 +122,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         {
             if (_snapshot.State is CaptureState.Idle
                 or CaptureState.Stopped
+                or CaptureState.Faulted
                 or CaptureState.Disposed)
             {
                 return Task.FromResult(_snapshot);
@@ -376,11 +377,11 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         }
         catch (TimeoutException exception)
         {
-            completion.TrySetResult(
-                PublishFailure(
-                    CaptureState.Interrupted,
-                    CaptureFailureKind.Interrupted,
-                    exception));
+            completion.TrySetResult(BeginInterruptedCleanup(exception));
+        }
+        catch (OperationCanceledException exception)
+        {
+            completion.TrySetResult(BeginInterruptedCleanup(exception));
         }
         catch (Exception exception)
         {
@@ -390,6 +391,123 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                     Classify(exception),
                     exception));
         }
+    }
+
+    private CaptureWorkflowSnapshot BeginInterruptedCleanup(
+        Exception interruption)
+    {
+        ActiveSession? session;
+        var cleanupStart = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task cleanup;
+        lock (_gate)
+        {
+            session = _session;
+            if (session is null)
+            {
+                return _snapshot;
+            }
+
+            session.Coordinator.TransferEvidenceToDeferredCleanup();
+            session.Lifetime.Cancel();
+            cleanup = Task.Run(
+                async () =>
+                {
+                    await cleanupStart.Task.ConfigureAwait(false);
+                    await CompleteDeferredCleanupAsync(session)
+                        .ConfigureAwait(false);
+                },
+                CancellationToken.None);
+            _deferredCleanupCompletion = cleanup;
+        }
+
+        ObserveFault(cleanup);
+        var snapshot = PublishFailure(
+            CaptureState.Interrupted,
+            CaptureFailureKind.Interrupted,
+            interruption);
+        cleanupStart.TrySetResult();
+        return snapshot;
+    }
+
+    private async Task CompleteDeferredCleanupAsync(
+        ActiveSession session)
+    {
+        var failures = new List<Exception>();
+        RawEvidenceCompletion? completion = null;
+        try
+        {
+            await session.RunTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+            when (session.Lifetime.IsCancellationRequested)
+        {
+            // Cancellation transfers any unread source backlog to abandonment.
+        }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
+        }
+
+        if (failures.Count == 0)
+        {
+            try
+            {
+                completion = await session.Coordinator
+                    .FinalizeEvidenceAsync(CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+            }
+        }
+
+        var cleanupFailure = await DisposeComponentsAsync(
+                session.Components)
+            .ConfigureAwait(false);
+        if (cleanupFailure is not null)
+        {
+            failures.Add(cleanupFailure);
+        }
+
+        session.Lifetime.Dispose();
+        CaptureCounters counters;
+        try
+        {
+            counters = session.Coordinator.CaptureCounters;
+        }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
+            counters = Snapshot.Counters;
+        }
+
+        lock (_gate)
+        {
+            if (ReferenceEquals(_session, session))
+            {
+                _session = null;
+            }
+        }
+
+        if (failures.Count == 0)
+        {
+            PublishState(
+                CaptureState.Stopped,
+                counters,
+                completion);
+            return;
+        }
+
+        PublishFailure(
+            CaptureState.Faulted,
+            Classify(failures[0]),
+            failures.Count == 1
+                ? failures[0]
+                : new AggregateException(
+                    "Deferred capture cleanup reported multiple failures.",
+                    failures));
     }
 
     private async Task ObserveUnexpectedCompletionAsync(
@@ -415,10 +533,29 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 }
             }
 
+            var counters = session.Coordinator.CaptureCounters;
+            var cleanupFailure = await DisposeComponentsAsync(
+                    session.Components)
+                .ConfigureAwait(false);
+            session.Lifetime.Dispose();
+            var failure = Combine(exception, cleanupFailure);
+            lock (_gate)
+            {
+                if (ReferenceEquals(_session, session))
+                {
+                    _session = null;
+                }
+
+                _snapshot = _snapshot with
+                {
+                    Counters = counters,
+                };
+            }
+
             PublishFailure(
                 CaptureState.Faulted,
                 Classify(exception),
-                exception);
+                failure);
         }
     }
 
@@ -579,6 +716,14 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             primary,
             cleanup);
     }
+
+    private static void ObserveFault(Task task) =>
+        _ = task.ContinueWith(
+            completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted
+                | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
     private sealed class SessionObserver(
         CaptureWorkflow owner) : ICapturePacketObserver

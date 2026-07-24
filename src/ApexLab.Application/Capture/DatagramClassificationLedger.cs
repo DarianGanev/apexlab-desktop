@@ -19,6 +19,7 @@ internal sealed class DatagramClassificationLedger
     private long _sinkWritten;
     private long _sinkWriteFailed;
     private long _sinkPending;
+    private long _sinkPendingDeferredCleanup;
     private long _finalizedRecords;
     private long _stagedRecords;
 
@@ -44,7 +45,6 @@ internal sealed class DatagramClassificationLedger
         lock (_gate)
         {
             RequirePendingEvidence();
-            _sinkPending--;
             _sinkWritten = checked(_sinkWritten + 1);
             _stagedRecords = checked(_stagedRecords + 1);
         }
@@ -55,7 +55,6 @@ internal sealed class DatagramClassificationLedger
         lock (_gate)
         {
             RequirePendingEvidence();
-            _sinkPending--;
             _sinkWriteFailed = checked(_sinkWriteFailed + 1);
         }
     }
@@ -66,6 +65,7 @@ internal sealed class DatagramClassificationLedger
         lock (_gate)
         {
             if (_sinkPending != 0
+                || _sinkPendingDeferredCleanup != 0
                 || _finalizedRecords != 0
                 || _stagedRecords != recordCount
                 || _sinkWritten != recordCount)
@@ -76,6 +76,16 @@ internal sealed class DatagramClassificationLedger
 
             _finalizedRecords = _stagedRecords;
             _stagedRecords = 0;
+        }
+    }
+
+    public void TransferPendingEvidenceToDeferredCleanup()
+    {
+        lock (_gate)
+        {
+            _sinkPendingDeferredCleanup = checked(
+                _sinkPendingDeferredCleanup + _sinkPending);
+            _sinkPending = 0;
         }
     }
 
@@ -114,7 +124,7 @@ internal sealed class DatagramClassificationLedger
                     _sinkWritten,
                     _sinkWriteFailed,
                     _sinkPending,
-                    sinkPendingDeferredCleanup: 0,
+                    _sinkPendingDeferredCleanup,
                     _finalizedRecords,
                     _stagedRecords));
         }
@@ -166,10 +176,19 @@ internal sealed class DatagramClassificationLedger
 
     private void RequirePendingEvidence()
     {
-        if (_sinkPending == 0)
+        if (_sinkPending > 0)
         {
-            throw new InvalidOperationException(
-                "An evidence completion requires a pending compatible datagram.");
+            _sinkPending--;
+            return;
         }
+
+        if (_sinkPendingDeferredCleanup > 0)
+        {
+            _sinkPendingDeferredCleanup--;
+            return;
+        }
+
+        throw new InvalidOperationException(
+            "An evidence completion requires a pending compatible datagram.");
     }
 }

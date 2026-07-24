@@ -99,6 +99,9 @@ public sealed class CaptureIngestionCoordinator
         }
     }
 
+    public void TransferEvidenceToDeferredCleanup() =>
+        _ledger.TransferPendingEvidenceToDeferredCleanup();
+
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
         if (Interlocked.Exchange(ref _runStarted, 1) != 0)
