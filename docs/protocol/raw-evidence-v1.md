@@ -97,8 +97,10 @@ implementation MUST:
    handles with the access needed for write, readback, flush, and handle-based rename, while still
    denying write/delete sharing to other handles.
 6. Rename an open staging file with `SetFileInformationByHandle` using a no-replace
-   `FILE_RENAME_INFO` operation. The final leaf name is generated and the retained capture-directory
-   handle is the rename root. A pathname-based `File.Move` is not permitted.
+   `FILE_RENAME_INFO` operation. The destination is the generated absolute final path under the
+   retained capture directory; `RootDirectory` is null. The retained application-root and
+   capture-directory handles deny delete sharing, so neither parent can be renamed or replaced
+   during the operation. A pathname-based `File.Move` is not permitted.
 
 If the required no-follow, handle-query, sharing, or handle-based-rename capability is unavailable,
 the operation fails as an unsafe-path/platform failure. There is no path-based fallback.
