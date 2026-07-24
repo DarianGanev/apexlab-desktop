@@ -83,6 +83,7 @@ public sealed class MutexSingleInstanceLeaseTests
         using var ownerReached = new ManualResetEventSlim(false);
         using var publishResult = new ManualResetEventSlim(false);
         using var bothCallersEntered = new CountdownEvent(2);
+        using var releaseWaitingForAcquirers = new ManualResetEventSlim(false);
         var identity = $"ApexLab.Tests.{Guid.NewGuid():N}";
         using var subject = new MutexSingleInstanceLease(
             identity,
@@ -95,6 +96,7 @@ public sealed class MutexSingleInstanceLeaseTests
                     ownerReached.Set();
                     publishResult.Wait();
                 },
+                ReleaseWaitingForAcquirers = releaseWaitingForAcquirers.Set,
             });
         using var callersReady = new Barrier(3);
 
@@ -116,19 +118,32 @@ public sealed class MutexSingleInstanceLeaseTests
             CancellationToken.None,
             TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
-        Assert.IsTrue(callersReady.SignalAndWait(coordinationTimeout));
-        Assert.IsTrue(bothCallersEntered.Wait(coordinationTimeout));
-        Assert.IsTrue(ownerReached.Wait(coordinationTimeout));
-        var release = Task.Factory.StartNew(
-            subject.Release,
-            CancellationToken.None,
-            TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
-            TaskScheduler.Default);
+        Task? release = null;
+        try
+        {
+            Assert.IsTrue(callersReady.SignalAndWait(coordinationTimeout));
+            Assert.IsTrue(bothCallersEntered.Wait(coordinationTimeout));
+            Assert.IsTrue(ownerReached.Wait(coordinationTimeout));
+            release = Task.Factory.StartNew(
+                subject.Release,
+                CancellationToken.None,
+                TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+            Assert.IsTrue(releaseWaitingForAcquirers.Wait(coordinationTimeout));
 
-        publishResult.Set();
+            publishResult.Set();
 
-        Assert.IsTrue(await first.WaitAsync(coordinationTimeout));
-        Assert.IsTrue(await second.WaitAsync(coordinationTimeout));
-        await release.WaitAsync(coordinationTimeout);
+            Assert.IsTrue(await first.WaitAsync(coordinationTimeout));
+            Assert.IsTrue(await second.WaitAsync(coordinationTimeout));
+            await release.WaitAsync(coordinationTimeout);
+        }
+        finally
+        {
+            publishResult.Set();
+            var startedActors = release is null
+                ? new Task[] { first, second }
+                : [first, second, release];
+            await Task.WhenAll(startedActors).WaitAsync(coordinationTimeout);
+        }
     }
 }
