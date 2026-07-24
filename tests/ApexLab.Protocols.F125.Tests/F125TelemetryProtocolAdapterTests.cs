@@ -155,6 +155,28 @@ public sealed class F125TelemetryProtocolAdapterTests
     }
 
     [TestMethod]
+    public void OnlyExplicitEvidenceAllowedDispositionPassesPrivacyPolicy()
+    {
+        TelemetryPacketPrivacyDisposition[] rejectedDispositions =
+        [
+            TelemetryPacketPrivacyDisposition.Unspecified,
+            TelemetryPacketPrivacyDisposition.IdentityBearingExcluded,
+            (TelemetryPacketPrivacyDisposition)byte.MaxValue,
+        ];
+
+        Assert.IsTrue(
+            F125TelemetryProtocolAdapter.IsEvidenceAllowed(
+                TelemetryPacketPrivacyDisposition.EvidenceAllowed));
+
+        foreach (var disposition in rejectedDispositions)
+        {
+            Assert.IsFalse(
+                F125TelemetryProtocolAdapter.IsEvidenceAllowed(disposition),
+                $"Disposition {disposition} unexpectedly passed the privacy policy.");
+        }
+    }
+
+    [TestMethod]
     public void EveryEvidenceAllowedFamilyIsCompatible()
     {
         foreach (var descriptor in F125PacketDescriptorCatalog.Descriptors.Where(

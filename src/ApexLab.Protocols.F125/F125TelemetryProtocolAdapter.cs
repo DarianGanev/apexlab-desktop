@@ -56,8 +56,7 @@ public sealed class F125TelemetryProtocolAdapter : ITelemetryProtocolAdapter
                 descriptor);
         }
 
-        if (descriptor.PrivacyDisposition
-            == TelemetryPacketPrivacyDisposition.IdentityBearingExcluded)
+        if (!IsEvidenceAllowed(descriptor.PrivacyDisposition))
         {
             return TelemetryPacketResult.Rejected(
                 TelemetryPacketClassification.ExcludedPrivacyPacket,
@@ -66,6 +65,12 @@ public sealed class F125TelemetryProtocolAdapter : ITelemetryProtocolAdapter
         }
 
         return TelemetryPacketResult.Compatible(header, descriptor);
+    }
+
+    internal static bool IsEvidenceAllowed(
+        TelemetryPacketPrivacyDisposition privacyDisposition)
+    {
+        return privacyDisposition == TelemetryPacketPrivacyDisposition.EvidenceAllowed;
     }
 
     private static TelemetryHeaderMetadata ToMetadata(F125PacketHeader header)
