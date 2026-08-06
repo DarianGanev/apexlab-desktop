@@ -22,6 +22,7 @@ internal sealed class DatagramClassificationLedger
     private long _sinkPendingDeferredCleanup;
     private long _finalizedRecords;
     private long _stagedRecords;
+    private bool _deferredEvidenceMode;
 
     public void Record(
         TelemetryPacketClassification classification,
@@ -35,7 +36,15 @@ internal sealed class DatagramClassificationLedger
             if (trackCompatibleEvidence
                 && classification == TelemetryPacketClassification.Compatible)
             {
-                _sinkPending = checked(_sinkPending + 1);
+                if (_deferredEvidenceMode)
+                {
+                    _sinkPendingDeferredCleanup = checked(
+                        _sinkPendingDeferredCleanup + 1);
+                }
+                else
+                {
+                    _sinkPending = checked(_sinkPending + 1);
+                }
             }
         }
     }
@@ -83,6 +92,7 @@ internal sealed class DatagramClassificationLedger
     {
         lock (_gate)
         {
+            _deferredEvidenceMode = true;
             _sinkPendingDeferredCleanup = checked(
                 _sinkPendingDeferredCleanup + _sinkPending);
             _sinkPending = 0;
