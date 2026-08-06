@@ -56,6 +56,25 @@ public sealed class ShellXamlContractTests
     }
 
     [TestMethod]
+    public void Capture_diagnostics_expose_durability_and_deferred_ownership_accessibly()
+    {
+        var xaml = File.ReadAllText(GetAppFile("MainWindow.xaml"));
+
+        StringAssert.Contains(xaml, "Capture.DiagnosticText");
+        StringAssert.Contains(xaml, "Capture.NextStepText");
+        StringAssert.Contains(xaml, "Capture.ActivePendingText");
+        StringAssert.Contains(xaml, "Capture.DeferredPendingText");
+        StringAssert.Contains(xaml, "Capture.IsProvisional");
+        StringAssert.Contains(xaml, "Capture.ProvisionalText");
+        StringAssert.Contains(xaml, "Capture.DurabilityText");
+        StringAssert.Contains(xaml, "Capture.ResetCommand");
+        StringAssert.Contains(xaml, "ToolTip");
+        StringAssert.Contains(xaml, "AutomationProperties.HelpText");
+        StringAssert.Contains(xaml, "completion manifest");
+        StringAssert.Contains(xaml, "directory-entry crash durability is not claimed");
+    }
+
+    [TestMethod]
     public void Advanced_routes_are_secondary_and_named_for_assistive_technology()
     {
         var document = LoadXaml("MainWindow.xaml");

@@ -14,9 +14,16 @@ public sealed class CaptureViewModel :
     private string _statusText;
     private string _receivedText;
     private string _compatibleText;
-    private string _pendingText;
+    private string _activePendingText;
+    private string _deferredPendingText;
     private string _writtenText;
     private string _finalizedText;
+    private string _diagnosticText;
+    private string _nextStepText;
+    private string _durabilityText;
+    private string _provisionalText;
+    private bool _isProvisional;
+    private Task? _observedDeferredCleanup;
     private int _armRunning;
     private int _stopRunning;
     private int _disposed;
@@ -27,25 +34,36 @@ public sealed class CaptureViewModel :
         _workflow = workflow;
         _synchronizationContext = SynchronizationContext.Current;
         _snapshot = workflow.Snapshot;
-        _statusText = Status(_snapshot);
+        var presentation = CaptureStatusText.For(_snapshot);
+        _statusText = presentation.StatusText;
         _receivedText = Count(
             _snapshot.Counters.Source.DatagramsObserved);
         _compatibleText = Count(
             _snapshot.Counters.Classifier.Compatible);
-        _pendingText = Count(
-            _snapshot.Counters.Evidence.SinkPending
-            + _snapshot.Counters.Evidence.SinkPendingDeferredCleanup);
+        _activePendingText = Count(
+            _snapshot.Counters.Evidence.SinkPending);
+        _deferredPendingText = Count(
+            _snapshot.Counters.Evidence.SinkPendingDeferredCleanup);
         _writtenText = Count(
             _snapshot.Counters.Evidence.SinkWritten);
         _finalizedText = Count(
             _snapshot.Counters.Evidence.FinalizedRecords);
+        _diagnosticText = presentation.DiagnosticText;
+        _nextStepText = presentation.NextStepText;
+        _durabilityText = presentation.DurabilityText;
+        _isProvisional = _snapshot.IsProvisional;
+        _provisionalText = Provisional(_snapshot);
         ArmCommand = new RelayCommand(
             StartArm,
             () => _armRunning == 0 && _snapshot.CanArm);
         StopCommand = new RelayCommand(
             StartStop,
             () => _stopRunning == 0 && _snapshot.CanStop);
+        ResetCommand = new RelayCommand(
+            Reset,
+            CanReset);
         workflow.SnapshotChanged += OnSnapshotChanged;
+        ObserveDeferredCleanup(_snapshot);
     }
 
     public string StatusText
@@ -66,10 +84,16 @@ public sealed class CaptureViewModel :
         private set => SetProperty(ref _compatibleText, value);
     }
 
-    public string PendingText
+    public string ActivePendingText
     {
-        get => _pendingText;
-        private set => SetProperty(ref _pendingText, value);
+        get => _activePendingText;
+        private set => SetProperty(ref _activePendingText, value);
+    }
+
+    public string DeferredPendingText
+    {
+        get => _deferredPendingText;
+        private set => SetProperty(ref _deferredPendingText, value);
     }
 
     public string WrittenText
@@ -84,9 +108,41 @@ public sealed class CaptureViewModel :
         private set => SetProperty(ref _finalizedText, value);
     }
 
+    public string DiagnosticText
+    {
+        get => _diagnosticText;
+        private set => SetProperty(ref _diagnosticText, value);
+    }
+
+    public string NextStepText
+    {
+        get => _nextStepText;
+        private set => SetProperty(ref _nextStepText, value);
+    }
+
+    public string DurabilityText
+    {
+        get => _durabilityText;
+        private set => SetProperty(ref _durabilityText, value);
+    }
+
+    public string ProvisionalText
+    {
+        get => _provisionalText;
+        private set => SetProperty(ref _provisionalText, value);
+    }
+
+    public bool IsProvisional
+    {
+        get => _isProvisional;
+        private set => SetProperty(ref _isProvisional, value);
+    }
+
     public RelayCommand ArmCommand { get; }
 
     public RelayCommand StopCommand { get; }
+
+    public RelayCommand ResetCommand { get; }
 
     public void Dispose()
     {
@@ -124,6 +180,27 @@ public sealed class CaptureViewModel :
             () => Interlocked.Exchange(ref _stopRunning, 0));
     }
 
+    private void Reset()
+    {
+        if (!CanReset())
+        {
+            return;
+        }
+
+        try
+        {
+            _workflow.Reset();
+        }
+        catch (InvalidOperationException)
+        {
+            // Ownership changed after the command check; the workflow remains authoritative.
+        }
+        finally
+        {
+            RaiseCommandState();
+        }
+    }
+
     private async Task CompleteOperationAsync(
         Func<Task<CaptureWorkflowSnapshot>> operation,
         Action release)
@@ -151,18 +228,26 @@ public sealed class CaptureViewModel :
     private void Apply(CaptureWorkflowSnapshot snapshot)
     {
         _snapshot = snapshot;
-        StatusText = Status(snapshot);
+        var presentation = CaptureStatusText.For(snapshot);
+        StatusText = presentation.StatusText;
         ReceivedText = Count(
             snapshot.Counters.Source.DatagramsObserved);
         CompatibleText = Count(
             snapshot.Counters.Classifier.Compatible);
-        PendingText = Count(
-            snapshot.Counters.Evidence.SinkPending
-            + snapshot.Counters.Evidence.SinkPendingDeferredCleanup);
+        ActivePendingText = Count(
+            snapshot.Counters.Evidence.SinkPending);
+        DeferredPendingText = Count(
+            snapshot.Counters.Evidence.SinkPendingDeferredCleanup);
         WrittenText = Count(
             snapshot.Counters.Evidence.SinkWritten);
         FinalizedText = Count(
             snapshot.Counters.Evidence.FinalizedRecords);
+        DiagnosticText = presentation.DiagnosticText;
+        NextStepText = presentation.NextStepText;
+        DurabilityText = presentation.DurabilityText;
+        IsProvisional = snapshot.IsProvisional;
+        ProvisionalText = Provisional(snapshot);
+        ObserveDeferredCleanup(snapshot);
         RaiseCommandState();
     }
 
@@ -170,6 +255,52 @@ public sealed class CaptureViewModel :
     {
         ArmCommand.RaiseCanExecuteChanged();
         StopCommand.RaiseCanExecuteChanged();
+        ResetCommand.RaiseCanExecuteChanged();
+    }
+
+    private bool CanReset() =>
+        _snapshot.CanReset
+        && _workflow.DeferredCleanupCompletion.IsCompleted;
+
+    private void ObserveDeferredCleanup(
+        CaptureWorkflowSnapshot snapshot)
+    {
+        if (snapshot.State != CaptureState.Faulted)
+        {
+            return;
+        }
+
+        var deferred = _workflow.DeferredCleanupCompletion;
+        if (ReferenceEquals(deferred, _observedDeferredCleanup))
+        {
+            return;
+        }
+
+        _observedDeferredCleanup = deferred;
+        _ = RefreshResetAfterCleanupAsync(deferred);
+    }
+
+    private async Task RefreshResetAfterCleanupAsync(Task deferred)
+    {
+        try
+        {
+            await deferred.ConfigureAwait(false);
+        }
+        catch
+        {
+            // A cleanup failure is already represented by the workflow fault state.
+        }
+
+        Post(() =>
+        {
+            if (Volatile.Read(ref _disposed) == 0
+                && ReferenceEquals(
+                    deferred,
+                    _observedDeferredCleanup))
+            {
+                RaiseCommandState();
+            }
+        });
     }
 
     private void Post(Action action)
@@ -188,10 +319,11 @@ public sealed class CaptureViewModel :
             action);
     }
 
-    private static string Status(CaptureWorkflowSnapshot snapshot) =>
-        CaptureStatusText.For(
-            snapshot.State,
-            snapshot.FailureKind);
+    private static string Provisional(
+        CaptureWorkflowSnapshot snapshot) =>
+        snapshot.IsProvisional
+            ? "Provisional: deferred cleanup is still resolving and counts may still change."
+            : "Counters are resolved for the current capture state.";
 
     private static string Count(long value) =>
         value.ToString(

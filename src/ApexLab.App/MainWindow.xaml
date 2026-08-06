@@ -343,7 +343,7 @@
                                         <TextBlock Grid.Column="1"
                                                    Foreground="{StaticResource SecondaryTextBrush}"
                                                    FontSize="13"
-                                                   Text="Raw evidence remains on this PC and is finalized only after a clean stop."
+                                                   Text="Raw evidence remains on this PC. Written records become final evidence only when the completion manifest is committed."
                                                    TextWrapping="Wrap" />
                                     </Grid>
                                 </Border>
@@ -359,18 +359,75 @@
                                     <Button x:Name="StopCaptureButton"
                                             Width="150"
                                             Height="42"
+                                            Margin="0,0,10,0"
                                             Content="_Stop capture"
                                             Command="{Binding Capture.StopCommand}"
                                             AutomationProperties.Name="Stop and finalize F1 25 capture" />
+                                    <Button x:Name="ResetCaptureButton"
+                                            Width="130"
+                                            Height="42"
+                                            Content="_Reset fault"
+                                            Command="{Binding Capture.ResetCommand}"
+                                            AutomationProperties.Name="Reset resolved capture fault"
+                                            AutomationProperties.HelpText="Enabled only after faulted capture ownership and cleanup have resolved." />
                                 </StackPanel>
                                 <UniformGrid Margin="0,18,0,0"
-                                             Columns="5">
-                                    <TextBlock Text="{Binding Capture.ReceivedText, StringFormat=Received {0}}" />
-                                    <TextBlock Text="{Binding Capture.CompatibleText, StringFormat=Compatible {0}}" />
-                                    <TextBlock Text="{Binding Capture.PendingText, StringFormat=Pending {0}}" />
-                                    <TextBlock Text="{Binding Capture.WrittenText, StringFormat=Written {0}}" />
-                                    <TextBlock Text="{Binding Capture.FinalizedText, StringFormat=Finalized {0}}" />
+                                             Columns="6">
+                                    <TextBlock Text="{Binding Capture.ReceivedText, StringFormat=Received {0}}"
+                                               ToolTip="Received is the aggregate number of loopback datagrams observed by the bounded source."
+                                               AutomationProperties.HelpText="Received counts aggregate datagrams only; no sender or payload detail is displayed." />
+                                    <TextBlock Text="{Binding Capture.CompatibleText, StringFormat=Compatible {0}}"
+                                               ToolTip="Compatible records passed the F1 25 base-v3 envelope and privacy policy; they are not necessarily durable."
+                                               AutomationProperties.HelpText="Compatible does not mean written or finalized." />
+                                    <TextBlock Text="{Binding Capture.ActivePendingText, StringFormat=Pending {0}}"
+                                               ToolTip="Active pending records are classified but their write has not completed."
+                                               AutomationProperties.HelpText="Active pending records are not yet written or durable." />
+                                    <TextBlock Text="{Binding Capture.DeferredPendingText, StringFormat=Deferred {0}}"
+                                               ToolTip="Deferred pending records are still owned by background cleanup and remain provisional."
+                                               AutomationProperties.HelpText="Deferred pending counts may change until cleanup resolves." />
+                                    <TextBlock Text="{Binding Capture.WrittenText, StringFormat=Written {0}}"
+                                               ToolTip="Written records are staged; they are not final evidence before the completion manifest."
+                                               AutomationProperties.HelpText="Written records are staged and are not final evidence." />
+                                    <TextBlock Text="{Binding Capture.FinalizedText, StringFormat=Finalized {0}}"
+                                               ToolTip="Finalized records have a committed completion manifest and flushed file contents."
+                                               AutomationProperties.HelpText="Finalized means the completion manifest was committed; directory-entry crash durability is not claimed." />
                                 </UniformGrid>
+                                <Border Margin="0,16,0,0"
+                                        Padding="10,7"
+                                        HorizontalAlignment="Left"
+                                        Background="#493817"
+                                        BorderBrush="#7E6427"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        Visibility="{Binding Capture.IsProvisional, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                        ToolTip="{Binding Capture.ProvisionalText}"
+                                        AutomationProperties.HelpText="Provisional counters may change while deferred cleanup still owns writes.">
+                                    <TextBlock Foreground="#F4C46B"
+                                               FontSize="12"
+                                               FontWeight="Bold"
+                                               Text="{Binding Capture.ProvisionalText}" />
+                                </Border>
+                                <TextBlock Margin="0,16,0,0"
+                                           FontWeight="SemiBold"
+                                           Text="Aggregate diagnostics" />
+                                <TextBlock Margin="0,6,0,0"
+                                           Foreground="{StaticResource SecondaryTextBrush}"
+                                           Text="{Binding Capture.DiagnosticText}"
+                                           TextWrapping="Wrap" />
+                                <TextBlock Margin="0,12,0,0"
+                                           FontWeight="SemiBold"
+                                           Text="Next step" />
+                                <TextBlock Margin="0,6,0,0"
+                                           Foreground="{StaticResource SecondaryTextBrush}"
+                                           Text="{Binding Capture.NextStepText}"
+                                           TextWrapping="Wrap" />
+                                <TextBlock Margin="0,12,0,0"
+                                           Foreground="{StaticResource SecondaryTextBrush}"
+                                           FontSize="12"
+                                           Text="{Binding Capture.DurabilityText}"
+                                           TextWrapping="Wrap"
+                                           ToolTip="Pending is not written; written is staged; finalized requires a committed completion manifest."
+                                           AutomationProperties.HelpText="Evidence durability help: directory-entry crash durability is not claimed." />
                             </StackPanel>
                         </Border>
 
