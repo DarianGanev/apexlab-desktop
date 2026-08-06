@@ -174,6 +174,8 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         TaskCompletionSource<CaptureWorkflowSnapshot> completion;
         CaptureWorkflowSnapshot binding;
         CancellationTokenSource armCancellation;
+        var bindingPublished = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         Task ownership;
         long generation;
         lock (_gate)
@@ -219,11 +221,16 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             _armCancellation = armCancellation;
             _bindingNotificationPending = true;
             ownership = Task.Run(
-                () => ArmCoreAsync(
-                    generation,
-                    binding.CaptureId!,
-                    completion,
-                    armCancellation),
+                async () =>
+                {
+                    await bindingPublished.Task.ConfigureAwait(false);
+                    await ArmCoreAsync(
+                            generation,
+                            binding.CaptureId!,
+                            completion,
+                            armCancellation)
+                        .ConfigureAwait(false);
+                },
                 CancellationToken.None);
             _armOwnershipTask = ownership;
         }
@@ -238,8 +245,8 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             lock (_gate)
             {
                 _bindingNotificationPending = false;
-                Monitor.PulseAll(_gate);
             }
+            bindingPublished.TrySetResult();
         }
 
         return completion.Task;
@@ -442,6 +449,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         var cancellationToken = armCancellation.Token;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             components = await _factory.CreateAsync(
                     captureId,
                     cancellationToken)
@@ -605,16 +613,41 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     {
         Task? armOwnershipTask;
         CancellationTokenSource? armCancellation;
+        bool bindingNotificationPending;
         lock (_gate)
         {
             armOwnershipTask = _armOwnershipTask;
             armCancellation = _armCancellation;
+            bindingNotificationPending = _bindingNotificationPending;
         }
 
         if (armOwnershipTask is not null
             && !armOwnershipTask.IsCompleted)
         {
             armCancellation?.Cancel();
+            var deferredBindingOwnership = false;
+            if (bindingNotificationPending)
+            {
+                lock (_gate)
+                {
+                    if (_bindingNotificationPending
+                        && ReferenceEquals(
+                            armOwnershipTask,
+                            _armOwnershipTask))
+                    {
+                        _deferredCleanupCompletion = armOwnershipTask;
+                        deferredBindingOwnership = true;
+                    }
+                }
+            }
+
+            if (deferredBindingOwnership)
+            {
+                return PublishState(
+                    CaptureState.Stopped,
+                    generation: generation);
+            }
+
             await armOwnershipTask.ConfigureAwait(false);
         }
 
@@ -1136,7 +1169,6 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot current;
         lock (_gate)
         {
-            WaitForBindingNotification();
             if (generation != _generation
                 || _snapshot.State != requiredState)
             {
@@ -1163,11 +1195,6 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot snapshot;
         lock (_gate)
         {
-            if (generation.HasValue
-                && _snapshot.State == CaptureState.Binding)
-            {
-                WaitForBindingNotification();
-            }
             WaitForInterruptedNotification();
             if (generation.HasValue
                 && generation.Value != _generation)
@@ -1196,11 +1223,6 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot snapshot;
         lock (_gate)
         {
-            if (generation.HasValue
-                && _snapshot.State == CaptureState.Binding)
-            {
-                WaitForBindingNotification();
-            }
             WaitForInterruptedNotification();
             if (generation.HasValue
                 && generation.Value != _generation)
@@ -1228,10 +1250,6 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         var publish = false;
         lock (_gate)
         {
-            if (_snapshot.State == CaptureState.Binding)
-            {
-                WaitForBindingNotification();
-            }
             if (generation != _generation)
             {
                 return CurrentSnapshot();
@@ -1269,10 +1287,6 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot snapshot;
         lock (_gate)
         {
-            if (_snapshot.State == CaptureState.Binding)
-            {
-                WaitForBindingNotification();
-            }
             if (generation != _generation)
             {
                 return CurrentSnapshot();
@@ -1302,14 +1316,6 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     private void WaitForInterruptedNotification()
     {
         while (_interruptedNotificationPending)
-        {
-            Monitor.Wait(_gate);
-        }
-    }
-
-    private void WaitForBindingNotification()
-    {
-        while (_bindingNotificationPending)
         {
             Monitor.Wait(_gate);
         }

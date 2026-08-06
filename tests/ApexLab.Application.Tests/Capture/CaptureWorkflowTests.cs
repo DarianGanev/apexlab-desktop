@@ -73,6 +73,10 @@ public sealed class CaptureWorkflowTests
         {
             if (snapshot.State == CaptureState.Binding)
             {
+                Assert.AreEqual(
+                    0,
+                    factory.CreateCalls,
+                    "Session creation must not race ahead of Binding publication.");
                 stopped = subject.StopAsync(
                         CaptureStopReason.User,
                         TestContext.CancellationToken)
@@ -89,6 +93,8 @@ public sealed class CaptureWorkflowTests
         Assert.AreEqual(CaptureState.Stopped, subject.Snapshot.State);
         Assert.AreEqual(CaptureStopReason.User, subject.Snapshot.StopReason);
         Assert.IsNull(subject.Snapshot.Failure);
+        Assert.AreEqual(0, factory.CreateCalls);
+        Assert.IsTrue(subject.DeferredCleanupCompletion.IsCompletedSuccessfully);
     }
 
     [TestMethod]
