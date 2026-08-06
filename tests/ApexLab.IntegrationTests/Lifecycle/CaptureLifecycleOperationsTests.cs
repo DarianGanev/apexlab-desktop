@@ -1,6 +1,5 @@
 using ApexLab.App.Capture;
 using ApexLab.Application.Capture;
-using Microsoft.Extensions.Hosting;
 
 namespace ApexLab.IntegrationTests.Lifecycle;
 
@@ -22,24 +21,19 @@ public sealed class CaptureLifecycleOperationsTests
         await subject.RollbackDataRootAsync(TestContext.CancellationToken);
 
         CollectionAssert.AreEqual(
-            new[] { "stop", "drain", "finalize" },
+            new[] { "begin:HostShutdown", "stop", "drain", "finalize" },
             workflow.Events);
     }
 
     [TestMethod]
-    public async Task HostedStopWaitsForDeferredCaptureOwnership()
+    public void Capture_contributor_is_not_itself_a_hosted_lifecycle()
     {
         var workflow = new RecordingCaptureWorkflow();
-        workflow.Deferred = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
         var subject = new CaptureLifecycleOperations(workflow);
 
-        var stop = ((IHostedService)subject).StopAsync(
-            TestContext.CancellationToken);
-
-        Assert.IsFalse(stop.IsCompleted);
-        workflow.Deferred.TrySetResult();
-        await stop.WaitAsync(TestContext.CancellationToken);
+        Assert.IsFalse(
+            typeof(Microsoft.Extensions.Hosting.IHostedService)
+                .IsAssignableFrom(subject.GetType()));
     }
 
     public TestContext TestContext { get; set; } = null!;
@@ -75,6 +69,9 @@ public sealed class CaptureLifecycleOperationsTests
                 {
                     State = CaptureState.Interrupted,
                 });
+
+        public void BeginStop(CaptureStopReason reason) =>
+            Events.Add($"begin:{reason}");
 
         public Task StopProducersAsync(
             CancellationToken cancellationToken = default)

@@ -7,6 +7,7 @@ using ApexLab.Application.Configuration;
 using ApexLab.Persistence.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace ApexLab.IntegrationTests.Shell;
 
@@ -36,6 +37,19 @@ public sealed class AppCompositionTests
         Assert.AreSame(
             host.Services.GetRequiredService<CaptureLifecycleOperations>(),
             host.Services.GetRequiredService<IApplicationLifecycleOperations>());
+        Assert.IsInstanceOfType<MutexSingleInstanceLease>(
+            host.Services.GetRequiredService<ISingleInstanceLease>());
+        Assert.AreSame(
+            host.Services.GetRequiredService<ApplicationLifecycleCoordinator>(),
+            host.Services.GetRequiredService<ApplicationLifecycleHostedService>().Coordinator);
+        var hostedServices = host.Services.GetServices<IHostedService>().ToArray();
+        Assert.HasCount(1, hostedServices);
+        Assert.AreSame(
+            host.Services.GetRequiredService<ApplicationLifecycleHostedService>(),
+            hostedServices[0]);
+        Assert.AreNotEqual(
+            typeof(CaptureLifecycleOperations),
+            hostedServices[0].GetType());
         Assert.IsFalse(Directory.Exists(localApplicationData));
     }
 

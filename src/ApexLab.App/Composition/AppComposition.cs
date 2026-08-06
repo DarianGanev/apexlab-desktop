@@ -65,9 +65,17 @@ public static class AppComposition
         services.AddSingleton<IApplicationLifecycleOperations>(
             provider =>
                 provider.GetRequiredService<CaptureLifecycleOperations>());
+        var lease = new MutexSingleInstanceLease("ApexLab.Desktop");
+        services.AddSingleton<ISingleInstanceLease>(lease);
+        services.AddSingleton(
+            provider => new ApplicationLifecycleCoordinator(
+                provider.GetRequiredService<ISingleInstanceLease>(),
+                provider.GetRequiredService<IApplicationLifecycleOperations>(),
+                TimeSpan.FromSeconds(5)));
+        services.AddSingleton<ApplicationLifecycleHostedService>();
         services.AddSingleton<IHostedService>(
             provider =>
-                provider.GetRequiredService<CaptureLifecycleOperations>());
+                provider.GetRequiredService<ApplicationLifecycleHostedService>());
         services.AddSingleton<CaptureViewModel>();
         services.AddSingleton<ShellViewModel>();
         services.AddSingleton<MainWindow>();

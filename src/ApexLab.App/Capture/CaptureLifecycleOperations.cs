@@ -1,13 +1,10 @@
 using ApexLab.App.Lifecycle;
 using ApexLab.Application.Capture;
-using Microsoft.Extensions.Hosting;
 
 namespace ApexLab.App.Capture;
 
 public sealed class CaptureLifecycleOperations(
-    ICaptureWorkflow workflow) :
-    IApplicationLifecycleOperations,
-    IHostedService
+    ICaptureWorkflow workflow) : IApplicationLifecycleOperations
 {
     public Task ValidateSettingsAsync(
         CancellationToken cancellationToken) =>
@@ -25,29 +22,17 @@ public sealed class CaptureLifecycleOperations(
         CancellationToken cancellationToken) =>
         Task.CompletedTask;
 
-    public Task StopProducersAsync(
-        CancellationToken cancellationToken) =>
-        workflow.StopProducersAsync(cancellationToken);
+    public Task StopProducersAsync(CancellationToken cancellationToken)
+    {
+        workflow.BeginStop(CaptureStopReason.HostShutdown);
+        return workflow.StopProducersAsync(CancellationToken.None);
+    }
 
     public Task DrainWorkAsync(
         CancellationToken cancellationToken) =>
-        workflow.DrainWorkAsync(cancellationToken);
+        workflow.DrainWorkAsync(CancellationToken.None);
 
     public Task FinalizeStoresAsync(
         CancellationToken cancellationToken) =>
-        workflow.FinalizeStoresAsync(cancellationToken);
-
-    Task IHostedService.StartAsync(
-        CancellationToken cancellationToken) =>
-        Task.CompletedTask;
-
-    async Task IHostedService.StopAsync(
-        CancellationToken cancellationToken)
-    {
-        await workflow.StopAsync(
-                CaptureStopReason.HostShutdown,
-                cancellationToken)
-            .ConfigureAwait(false);
-        await workflow.DeferredCleanupCompletion.ConfigureAwait(false);
-    }
+        workflow.FinalizeStoresAsync(CancellationToken.None);
 }

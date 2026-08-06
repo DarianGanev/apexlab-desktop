@@ -1,4 +1,5 @@
 using ApexLab.App;
+using ApexLab.App.Lifecycle;
 using Microsoft.Extensions.Hosting;
 
 namespace ApexLab.IntegrationTests.Shell;
@@ -129,6 +130,55 @@ public sealed class AppHostLifetimeTests
         Assert.AreEqual(1, host.DisposeCount);
     }
 
+    [TestMethod]
+    [Timeout(3_000, CooperativeCancellation = true)]
+    public async Task Window_exit_defers_host_disposal_while_lifecycle_owns_cleanup()
+    {
+        var releaseCleanup = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var lease = new RecordingLease();
+        var coordinator = new ApplicationLifecycleCoordinator(
+            lease,
+            new BlockingStopOperations(releaseCleanup.Task),
+            TimeSpan.FromMilliseconds(80));
+        Assert.AreEqual(
+            LifecycleStartOutcome.Started,
+            await coordinator.StartAsync(TestContext.CancellationToken));
+        var host = new DeferredDisposalHost(coordinator, lease);
+        var subject = new AppHostLifetime(
+            host,
+            _ => { },
+            TimeSpan.FromMilliseconds(250));
+        subject.Start();
+
+        var exit = Task.Run(subject.Dispose);
+        try
+        {
+            await exit.WaitAsync(TimeSpan.FromMilliseconds(500));
+
+            Assert.AreEqual(0, host.DisposeCount);
+            Assert.AreEqual(0, host.LeaseReleaseCount);
+            var completionProperty = typeof(AppHostLifetime).GetProperty(
+                "DeferredHostDisposalCompletion");
+            Assert.IsNotNull(completionProperty);
+            var completion = (Task)completionProperty.GetValue(subject)!;
+            Assert.IsFalse(completion.IsCompleted);
+
+            releaseCleanup.TrySetResult();
+            await completion.WaitAsync(TestContext.CancellationToken);
+
+            Assert.AreEqual(1, host.DisposeCount);
+            Assert.AreEqual(1, host.LeaseReleaseCount);
+        }
+        finally
+        {
+            releaseCleanup.TrySetResult();
+            await exit.WaitAsync(TestContext.CancellationToken);
+        }
+    }
+
+    public TestContext TestContext { get; set; } = null!;
+
     private sealed class RecordingHost : IHost
     {
         public IServiceProvider Services { get; } = new EmptyServiceProvider();
@@ -174,5 +224,80 @@ public sealed class AppHostLifetimeTests
     private sealed class EmptyServiceProvider : IServiceProvider
     {
         public object? GetService(Type serviceType) => null;
+    }
+
+    private sealed class RecordingLease : ISingleInstanceLease
+    {
+        public int ReleaseCount { get; private set; }
+
+        public bool TryAcquire() => true;
+
+        public void Release() => ReleaseCount++;
+
+        public void Dispose() => Release();
+    }
+
+    private sealed class BlockingStopOperations(Task release) :
+        IApplicationLifecycleOperations
+    {
+        public Task ValidateSettingsAsync(CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task PrepareDataRootAsync(CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task RollbackDataRootAsync(CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task StartProducersAsync(CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task StopProducersAsync(CancellationToken cancellationToken) =>
+            release;
+
+        public Task DrainWorkAsync(CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task FinalizeStoresAsync(CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+    }
+
+    private sealed class DeferredDisposalHost : IHost
+    {
+        private readonly ApplicationLifecycleCoordinator _coordinator;
+        private readonly RecordingLease _lease;
+
+        public DeferredDisposalHost(
+            ApplicationLifecycleCoordinator coordinator,
+            RecordingLease lease)
+        {
+            _coordinator = coordinator;
+            _lease = lease;
+            Services = new SingleServiceProvider(coordinator);
+        }
+
+        public IServiceProvider Services { get; }
+
+        public int DisposeCount { get; private set; }
+
+        public int LeaseReleaseCount => _lease.ReleaseCount;
+
+        public Task StartAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public async Task StopAsync(CancellationToken cancellationToken = default) =>
+            _ = await _coordinator.StopAsync();
+
+        public void Dispose()
+        {
+            _coordinator.DeferredCleanupCompletion.GetAwaiter().GetResult();
+            DisposeCount++;
+        }
+    }
+
+    private sealed class SingleServiceProvider(object service) : IServiceProvider
+    {
+        public object? GetService(Type serviceType) =>
+            serviceType.IsInstanceOfType(service) ? service : null;
     }
 }

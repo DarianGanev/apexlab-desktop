@@ -228,6 +228,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     {
         TaskCompletionSource<CaptureWorkflowSnapshot> completion;
         CaptureWorkflowSnapshot stopping;
+        var publishStopping = false;
         lock (_gate)
         {
             if (_snapshot.State is CaptureState.Idle
@@ -243,21 +244,43 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 return _stopTask;
             }
 
-            stopping = _snapshot = _snapshot with
-            {
-                State = CaptureState.Stopping,
-                StopReason = reason,
-            };
+            publishStopping = _snapshot.State != CaptureState.Stopping;
+            stopping = _snapshot = CreateStoppingSnapshot(_snapshot, reason);
             completion = new TaskCompletionSource<CaptureWorkflowSnapshot>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             _stopTask = completion.Task;
         }
 
-        NotifySnapshotChanged(stopping);
+        if (publishStopping)
+        {
+            NotifySnapshotChanged(stopping);
+        }
         _ = Task.Run(
             () => StopCoreAsync(completion, cancellationToken),
             CancellationToken.None);
         return completion.Task;
+    }
+
+    public void BeginStop(CaptureStopReason reason)
+    {
+        CaptureWorkflowSnapshot? stopping = null;
+        lock (_gate)
+        {
+            if (_snapshot.State is CaptureState.Binding
+                or CaptureState.WaitingForTraffic
+                or CaptureState.ReceivingCompatibleTraffic
+                or CaptureState.IncompatibleTraffic)
+            {
+                stopping = _snapshot = CreateStoppingSnapshot(
+                    _snapshot,
+                    reason);
+            }
+        }
+
+        if (stopping is not null)
+        {
+            NotifySnapshotChanged(stopping);
+        }
     }
 
     public void Reset()
@@ -1156,6 +1179,15 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             return _snapshot.Counters;
         }
     }
+
+    private static CaptureWorkflowSnapshot CreateStoppingSnapshot(
+        CaptureWorkflowSnapshot snapshot,
+        CaptureStopReason reason) =>
+        snapshot with
+        {
+            State = CaptureState.Stopping,
+            StopReason = reason,
+        };
 
     private static CaptureFailureKind Classify(Exception exception)
     {

@@ -85,6 +85,10 @@ public sealed class CaptureViewModelTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Snapshot);
 
+        public void BeginStop(CaptureStopReason reason)
+        {
+        }
+
         public Task StopProducersAsync(
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
