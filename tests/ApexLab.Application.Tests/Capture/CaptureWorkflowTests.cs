@@ -153,6 +153,110 @@ public sealed class CaptureWorkflowTests
         Assert.AreEqual(1, factory.Evidence.DisposeCalls);
     }
 
+    [TestMethod]
+    public async Task SourceStopFailureStillReleasesEveryOwnedResource()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Source.StopFailure =
+            new IOException("synthetic stop failure");
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        await subject.ArmAsync(TestContext.CancellationToken);
+
+        var stopped = await subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(CaptureState.Faulted, stopped.State);
+        Assert.AreSame(factory.Source.StopFailure, stopped.Failure);
+        Assert.AreEqual(1, factory.Source.DisposeCalls);
+        Assert.AreEqual(1, factory.Evidence.DisposeCalls);
+    }
+
+    [TestMethod]
+    public async Task FinalizeFailureStillReleasesEveryOwnedResource()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Evidence.FinalizeFailure =
+            new IOException("synthetic finalize failure");
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        await subject.ArmAsync(TestContext.CancellationToken);
+
+        var stopped = await subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(CaptureState.Faulted, stopped.State);
+        Assert.AreSame(factory.Evidence.FinalizeFailure, stopped.Failure);
+        Assert.AreEqual(1, factory.Source.DisposeCalls);
+        Assert.AreEqual(1, factory.Evidence.DisposeCalls);
+    }
+
+    [TestMethod]
+    public async Task WriteFailureDuringStopStillReleasesEveryOwnedResource()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Evidence.BlockWrites();
+        factory.Evidence.FailWrites = true;
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        await subject.ArmAsync(TestContext.CancellationToken);
+        factory.Source.Publish(marker: 1);
+        await factory.Evidence.WriteStarted.WaitAsync(
+            TestContext.CancellationToken);
+
+        var stop = subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+        factory.Evidence.ReleaseWrites();
+        var stopped = await stop.WaitAsync(TestContext.CancellationToken);
+
+        Assert.AreEqual(CaptureState.Faulted, stopped.State);
+        Assert.IsInstanceOfType<IOException>(stopped.Failure);
+        Assert.AreEqual(1, factory.Source.DisposeCalls);
+        Assert.AreEqual(1, factory.Evidence.DisposeCalls);
+    }
+
+    [TestMethod]
+    public async Task CancelledBindingKeepsEvidenceOwnedUntilIngestionStops()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Source.BlockStartUntilReleased();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        using var cancellation = new CancellationTokenSource();
+        var arm = subject.ArmAsync(cancellation.Token);
+        await factory.Source.StartEntered.WaitAsync(
+            TestContext.CancellationToken);
+
+        cancellation.Cancel();
+        await factory.Source.StartCancellationObserved.WaitAsync(
+            TestContext.CancellationToken);
+        try
+        {
+            Assert.AreEqual(0, factory.Evidence.DisposeCalls);
+        }
+        finally
+        {
+            factory.Source.ReleaseStart();
+        }
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => arm);
+        Assert.AreEqual(1, factory.Source.DisposeCalls);
+        Assert.AreEqual(1, factory.Evidence.DisposeCalls);
+        Assert.IsFalse(factory.Source.DisposedWhileStartActive);
+        Assert.IsFalse(factory.Evidence.DisposedWhileSourceStartActive);
+    }
+
     public TestContext TestContext { get; set; } = null!;
 
     private sealed class ControlledSessionFactory : ICaptureSessionFactory
@@ -161,6 +265,11 @@ public sealed class CaptureWorkflowTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _creationStarted =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ControlledSessionFactory()
+        {
+            Evidence.IsSourceStartActive = () => Source.IsStartActive;
+        }
 
         public ControlledDatagramSource Source { get; } = new();
 
@@ -193,6 +302,10 @@ public sealed class CaptureWorkflowTests
         private readonly Channel<DatagramEnvelope> _channel =
             Channel.CreateUnbounded<DatagramEnvelope>();
         private long _enqueued;
+        private TaskCompletionSource? _startEntered;
+        private TaskCompletionSource? _startCancellationObserved;
+        private TaskCompletionSource? _startRelease;
+        private int _startActive;
 
         public ChannelReader<DatagramEnvelope> Output => _channel.Reader;
 
@@ -214,10 +327,48 @@ public sealed class CaptureWorkflowTests
 
         public int DisposeCalls { get; private set; }
 
-        public Task StartAsync(CancellationToken cancellationToken = default)
+        public Exception? StopFailure { get; set; }
+
+        public Task StartEntered =>
+            _startEntered?.Task ?? Task.CompletedTask;
+
+        public Task StartCancellationObserved =>
+            _startCancellationObserved?.Task ?? Task.CompletedTask;
+
+        public bool IsStartActive =>
+            Volatile.Read(ref _startActive) != 0;
+
+        public bool DisposedWhileStartActive { get; private set; }
+
+        public async Task StartAsync(
+            CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.CompletedTask;
+            _startEntered?.TrySetResult();
+            if (_startRelease is null)
+            {
+                return;
+            }
+
+            Volatile.Write(ref _startActive, 1);
+            try
+            {
+                await Task.Delay(
+                        Timeout.InfiniteTimeSpan,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                _startCancellationObserved?.TrySetResult();
+                await _startRelease.Task.ConfigureAwait(false);
+                throw;
+            }
+            finally
+            {
+                Volatile.Write(ref _startActive, 0);
+            }
         }
 
         public Task StopAsync(CancellationToken cancellationToken = default)
@@ -225,7 +376,9 @@ public sealed class CaptureWorkflowTests
             cancellationToken.ThrowIfCancellationRequested();
             StopCalls++;
             _channel.Writer.TryComplete();
-            return Task.CompletedTask;
+            return StopFailure is null
+                ? Task.CompletedTask
+                : Task.FromException(StopFailure);
         }
 
         public void Publish(byte marker)
@@ -243,9 +396,22 @@ public sealed class CaptureWorkflowTests
                         [marker])));
         }
 
+        public void BlockStartUntilReleased()
+        {
+            _startEntered = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _startCancellationObserved = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _startRelease = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        public void ReleaseStart() => _startRelease?.TrySetResult();
+
         public ValueTask DisposeAsync()
         {
             DisposeCalls++;
+            DisposedWhileStartActive = IsStartActive;
             _channel.Writer.TryComplete();
             return ValueTask.CompletedTask;
         }
@@ -273,6 +439,12 @@ public sealed class CaptureWorkflowTests
         public int DisposeCalls { get; private set; }
 
         public bool FailWrites { get; set; }
+
+        public Exception? FinalizeFailure { get; set; }
+
+        public Func<bool>? IsSourceStartActive { get; set; }
+
+        public bool DisposedWhileSourceStartActive { get; private set; }
 
         public Task WriteStarted => _writeStarted.Task;
 
@@ -309,6 +481,12 @@ public sealed class CaptureWorkflowTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             FinalizeCalls++;
+            if (FinalizeFailure is not null)
+            {
+                return Task.FromException<RawEvidenceCompletion>(
+                    FinalizeFailure);
+            }
+
             return Task.FromResult(
                 new RawEvidenceCompletion(
                     CaptureId,
@@ -322,6 +500,8 @@ public sealed class CaptureWorkflowTests
         public ValueTask DisposeAsync()
         {
             DisposeCalls++;
+            DisposedWhileSourceStartActive =
+                IsSourceStartActive?.Invoke() == true;
             return ValueTask.CompletedTask;
         }
     }

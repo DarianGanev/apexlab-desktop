@@ -11,6 +11,10 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CancellationTokenSource Lifetime,
         Task RunTask);
 
+    private sealed record SessionRelease(
+        CaptureCounters Counters,
+        Exception? Failure);
+
     private readonly object _gate = new();
     private readonly ICaptureSessionFactory _factory;
     private readonly TimeSpan _stopTimeout;
@@ -69,6 +73,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     {
         TaskCompletionSource<CaptureWorkflowSnapshot> completion;
         CaptureWorkflowSnapshot binding;
+        CancellationTokenSource armCancellation;
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposeRequested, this);
@@ -99,9 +104,10 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             completion = new TaskCompletionSource<CaptureWorkflowSnapshot>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             _armTask = completion.Task;
-            _armCancellation =
+            armCancellation =
                 CancellationTokenSource.CreateLinkedTokenSource(
                     cancellationToken);
+            _armCancellation = armCancellation;
         }
 
         SnapshotChanged?.Invoke(this, binding);
@@ -109,7 +115,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             () => ArmCoreAsync(
                 binding.CaptureId!,
                 completion,
-                _armCancellation.Token),
+                armCancellation),
             CancellationToken.None);
         return completion.Task;
     }
@@ -278,10 +284,12 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     private async Task ArmCoreAsync(
         RawEvidenceCaptureId captureId,
         TaskCompletionSource<CaptureWorkflowSnapshot> completion,
-        CancellationToken cancellationToken)
+        CancellationTokenSource armCancellation)
     {
         CaptureSessionComponents? components = null;
         CancellationTokenSource? lifetime = null;
+        ActiveSession? session = null;
+        var cancellationToken = armCancellation.Token;
         try
         {
             components = await _factory.CreateAsync(
@@ -302,7 +310,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 new SessionObserver(this),
                 components.EvidenceStore);
             var runTask = coordinator.RunAsync(lifetime.Token);
-            var session = new ActiveSession(
+            session = new ActiveSession(
                 components,
                 coordinator,
                 lifetime,
@@ -323,25 +331,44 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)
         {
-            lifetime?.Cancel();
-            await DisposeComponentsAsync(components)
-                .ConfigureAwait(false);
-            lock (_gate)
+            var cleanupFailure = session is null
+                ? await DisposeComponentsAsync(components)
+                    .ConfigureAwait(false)
+                : (await ReleaseSessionAsync(
+                        session,
+                        transferPendingEvidence: true)
+                    .ConfigureAwait(false)).Failure;
+            if (session is null)
             {
-                _session = null;
+                lifetime?.Dispose();
             }
 
-            PublishState(CaptureState.Stopped);
-            completion.TrySetCanceled(cancellationToken);
+            if (cleanupFailure is null)
+            {
+                PublishState(CaptureState.Stopped);
+                completion.TrySetCanceled(cancellationToken);
+            }
+            else
+            {
+                var failed = PublishFailure(
+                    CaptureState.Faulted,
+                    Classify(cleanupFailure),
+                    cleanupFailure);
+                completion.TrySetResult(failed);
+            }
         }
         catch (Exception exception)
         {
-            lifetime?.Cancel();
-            var cleanupFailure = await DisposeComponentsAsync(components)
-                .ConfigureAwait(false);
-            lock (_gate)
+            var cleanupFailure = session is null
+                ? await DisposeComponentsAsync(components)
+                    .ConfigureAwait(false)
+                : (await ReleaseSessionAsync(
+                        session,
+                        transferPendingEvidence: true)
+                    .ConfigureAwait(false)).Failure;
+            if (session is null)
             {
-                _session = null;
+                lifetime?.Dispose();
             }
 
             var failure = Combine(exception, cleanupFailure);
@@ -356,14 +383,17 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         }
         finally
         {
-            CancellationTokenSource? armCancellation;
             lock (_gate)
             {
-                armCancellation = _armCancellation;
-                _armCancellation = null;
+                if (ReferenceEquals(
+                        _armCancellation,
+                        armCancellation))
+                {
+                    _armCancellation = null;
+                }
             }
 
-            armCancellation?.Dispose();
+            armCancellation.Dispose();
         }
     }
 
@@ -428,10 +458,8 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         catch (Exception exception)
         {
             completion.TrySetResult(
-                PublishFailure(
-                    CaptureState.Faulted,
-                    Classify(exception),
-                    exception));
+                await ResolveStopFailureAsync(exception)
+                    .ConfigureAwait(false));
         }
     }
 
@@ -449,14 +477,126 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             return;
         }
 
-        var evidenceCompletion =
-            await session.Coordinator.FinalizeEvidenceAsync(
-                    cancellationToken)
-                .ConfigureAwait(false);
-        var counters = session.Coordinator.CaptureCounters;
+        RawEvidenceCompletion? evidenceCompletion = null;
+        Exception? finalizationFailure = null;
+        try
+        {
+            evidenceCompletion =
+                await session.Coordinator.FinalizeEvidenceAsync(
+                        cancellationToken)
+                    .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            finalizationFailure = exception;
+        }
+
+        var release = await ReleaseSessionAsync(
+                session,
+                transferPendingEvidence: false)
+            .ConfigureAwait(false);
+        var failure = CombineFailures(
+            "Capture finalization and cleanup reported multiple failures.",
+            finalizationFailure,
+            release.Failure);
+        if (failure is not null)
+        {
+            PublishFailure(
+                CaptureState.Faulted,
+                Classify(finalizationFailure ?? failure),
+                failure);
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+
+        PublishState(
+            CaptureState.Stopped,
+            release.Counters,
+            evidenceCompletion);
+    }
+
+    private async Task<CaptureWorkflowSnapshot> ResolveStopFailureAsync(
+        Exception primaryFailure)
+    {
+        ActiveSession? session;
+        lock (_gate)
+        {
+            session = _session;
+        }
+
+        if (session is null)
+        {
+            return PublishFailure(
+                CaptureState.Faulted,
+                Classify(primaryFailure),
+                primaryFailure);
+        }
+
+        var release = await ReleaseSessionAsync(
+                session,
+                transferPendingEvidence: true)
+            .ConfigureAwait(false);
+        var failure = CombineFailures(
+                "Capture failed and cleanup also reported a failure.",
+                primaryFailure,
+                release.Failure)
+            ?? primaryFailure;
+        return PublishFailure(
+            CaptureState.Faulted,
+            Classify(primaryFailure),
+            failure);
+    }
+
+    private async Task<SessionRelease> ReleaseSessionAsync(
+        ActiveSession session,
+        bool transferPendingEvidence)
+    {
+        var failures = new List<Exception>();
+        if (transferPendingEvidence)
+        {
+            try
+            {
+                session.Coordinator.TransferEvidenceToDeferredCleanup();
+            }
+            catch (Exception exception)
+            {
+                AddDistinct(failures, exception);
+            }
+        }
+
+        session.Lifetime.Cancel();
+        try
+        {
+            await session.RunTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+            when (session.Lifetime.IsCancellationRequested)
+        {
+            // Expected when cleanup cancels source startup or ingestion.
+        }
+        catch (Exception exception)
+        {
+            AddDistinct(failures, exception);
+        }
+
+        CaptureCounters counters;
+        try
+        {
+            counters = session.Coordinator.CaptureCounters;
+        }
+        catch (Exception exception)
+        {
+            AddDistinct(failures, exception);
+            counters = Snapshot.Counters;
+        }
+
         var cleanupFailure = await DisposeComponentsAsync(
                 session.Components)
             .ConfigureAwait(false);
+        if (cleanupFailure is not null)
+        {
+            AddDistinct(failures, cleanupFailure);
+        }
+
         session.Lifetime.Dispose();
         lock (_gate)
         {
@@ -466,19 +606,11 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             }
         }
 
-        if (cleanupFailure is not null)
-        {
-            PublishFailure(
-                CaptureState.Faulted,
-                CaptureFailureKind.Unexpected,
-                cleanupFailure);
-            ExceptionDispatchInfo.Capture(cleanupFailure).Throw();
-        }
-
-        PublishState(
-            CaptureState.Stopped,
+        return new SessionRelease(
             counters,
-            evidenceCompletion);
+            CombineFailures(
+                "Capture cleanup reported multiple failures.",
+                failures.ToArray()));
     }
 
     private CaptureWorkflowSnapshot BeginInterruptedCleanup(
@@ -803,6 +935,37 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             "Capture failed and cleanup also reported a failure.",
             primary,
             cleanup);
+    }
+
+    private static Exception? CombineFailures(
+        string message,
+        params Exception?[] failures)
+    {
+        var distinct = new List<Exception>();
+        foreach (var failure in failures)
+        {
+            if (failure is not null)
+            {
+                AddDistinct(distinct, failure);
+            }
+        }
+
+        return distinct.Count switch
+        {
+            0 => null,
+            1 => distinct[0],
+            _ => new AggregateException(message, distinct),
+        };
+    }
+
+    private static void AddDistinct(
+        ICollection<Exception> failures,
+        Exception failure)
+    {
+        if (!failures.Any(existing => ReferenceEquals(existing, failure)))
+        {
+            failures.Add(failure);
+        }
     }
 
     private static void ObserveFault(Task task) =>
