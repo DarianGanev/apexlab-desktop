@@ -3,9 +3,15 @@ using System.Runtime.ExceptionServices;
 
 namespace ApexLab.Application.Capture;
 
+internal sealed class CaptureWorkflowTestHooks
+{
+    public Action? ObservationValidated { get; init; }
+}
+
 public sealed class CaptureWorkflow : ICaptureWorkflow
 {
     private sealed class ActiveSession(
+        long generation,
         CaptureSessionComponents components,
         CaptureIngestionCoordinator coordinator,
         CancellationTokenSource lifetime,
@@ -14,6 +20,8 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         private readonly object _releaseGate = new();
         private Task<SessionRelease>? _releaseTask;
         private bool _transferPendingEvidence;
+
+        public long Generation { get; } = generation;
 
         public CaptureSessionComponents Components { get; } = components;
 
@@ -61,6 +69,8 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     private readonly object _gate = new();
     private readonly ICaptureSessionFactory _factory;
     private readonly TimeSpan _stopTimeout;
+    private readonly TimeSpan _publicationInterval;
+    private readonly CaptureWorkflowTestHooks? _testHooks;
     private CaptureWorkflowSnapshot _snapshot =
         CaptureWorkflowSnapshot.Idle;
     private Task<CaptureWorkflowSnapshot>? _armTask;
@@ -72,10 +82,36 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     private ActiveSession? _session;
     private CancellationTokenSource? _armCancellation;
     private bool _disposeRequested;
+    private long _generation;
 
     public CaptureWorkflow(
         ICaptureSessionFactory factory,
         TimeSpan stopTimeout)
+        : this(factory, stopTimeout, publicationRateHz: 8, null)
+    {
+    }
+
+    public CaptureWorkflow(
+        ICaptureSessionFactory factory,
+        TimeSpan stopTimeout,
+        int publicationRateHz)
+        : this(factory, stopTimeout, publicationRateHz, null)
+    {
+    }
+
+    internal CaptureWorkflow(
+        ICaptureSessionFactory factory,
+        TimeSpan stopTimeout,
+        CaptureWorkflowTestHooks? testHooks)
+        : this(factory, stopTimeout, publicationRateHz: 8, testHooks)
+    {
+    }
+
+    private CaptureWorkflow(
+        ICaptureSessionFactory factory,
+        TimeSpan stopTimeout,
+        int publicationRateHz,
+        CaptureWorkflowTestHooks? testHooks)
     {
         ArgumentNullException.ThrowIfNull(factory);
         if (stopTimeout <= TimeSpan.Zero)
@@ -84,9 +120,18 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 nameof(stopTimeout),
                 "The capture stop timeout must be positive.");
         }
+        if (publicationRateHz is < 5 or > 10)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(publicationRateHz),
+                "Capture publication must be coalesced at 5-10 Hz.");
+        }
 
         _factory = factory;
         _stopTimeout = stopTimeout;
+        _publicationInterval = TimeSpan.FromSeconds(
+            1d / publicationRateHz);
+        _testHooks = testHooks;
     }
 
     public CaptureWorkflowSnapshot Snapshot
@@ -119,6 +164,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         TaskCompletionSource<CaptureWorkflowSnapshot> completion;
         CaptureWorkflowSnapshot binding;
         CancellationTokenSource armCancellation;
+        long generation;
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposeRequested, this);
@@ -136,6 +182,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             }
 
             var captureId = RawEvidenceCaptureId.Create();
+            generation = checked(++_generation);
             binding = _snapshot = new CaptureWorkflowSnapshot(
                 CaptureState.Binding,
                 captureId,
@@ -158,6 +205,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         NotifySnapshotChanged(binding);
         var ownership = Task.Run(
             () => ArmCoreAsync(
+                generation,
                 binding.CaptureId!,
                 completion,
                 armCancellation),
@@ -332,6 +380,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     }
 
     private async Task ArmCoreAsync(
+        long generation,
         RawEvidenceCaptureId captureId,
         TaskCompletionSource<CaptureWorkflowSnapshot> completion,
         CancellationTokenSource armCancellation)
@@ -358,16 +407,24 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 components.Source,
                 components.Adapter,
                 components.SenderPolicy,
-                new SessionObserver(this),
+                new SessionObserver(this, generation),
                 components.EvidenceStore);
             var runTask = coordinator.RunAsync(lifetime.Token);
             session = new ActiveSession(
+                generation,
                 components,
                 coordinator,
                 lifetime,
                 runTask);
             lock (_gate)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (generation != _generation
+                    || _snapshot.State != CaptureState.Binding)
+                {
+                    throw new OperationCanceledException(cancellationToken);
+                }
+
                 _session = session;
             }
 
@@ -375,11 +432,14 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            var waiting = PublishState(
+            var waiting = PublishActiveState(
+                generation,
+                CaptureState.Binding,
                 CaptureState.WaitingForTraffic);
             completion.TrySetResult(waiting);
             _ = ObserveUnexpectedCompletionAsync(session);
             ObserveFault(ObserveDurationLimitAsync(session));
+            ObserveFault(PublishAggregateSnapshotsAsync(session));
         }
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)
@@ -398,7 +458,9 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
 
             if (cleanupFailure is null)
             {
-                PublishState(CaptureState.Stopped);
+                PublishState(
+                    CaptureState.Stopped,
+                    generation: generation);
                 completion.TrySetCanceled(cancellationToken);
             }
             else
@@ -406,7 +468,8 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 var failed = PublishFailure(
                     CaptureState.Faulted,
                     Classify(cleanupFailure),
-                    cleanupFailure);
+                    cleanupFailure,
+                    generation);
                 completion.TrySetResult(failed);
             }
         }
@@ -431,7 +494,8 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                     ? CaptureState.Stopped
                     : CaptureState.Faulted,
                 Classify(exception),
-                failure);
+                failure,
+                generation);
             completion.TrySetResult(failed);
         }
         finally
@@ -579,14 +643,16 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             PublishFailure(
                 CaptureState.Faulted,
                 Classify(finalizationFailure ?? failure),
-                failure);
+                failure,
+                session.Generation);
             ExceptionDispatchInfo.Capture(failure).Throw();
         }
 
         PublishState(
             CaptureState.Stopped,
             release.Counters,
-            evidenceCompletion);
+            evidenceCompletion,
+            session.Generation);
     }
 
     private async Task<CaptureWorkflowSnapshot> ResolveStopFailureAsync(
@@ -820,7 +886,8 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             PublishFailure(
                 CaptureState.Faulted,
                 Classify(exception),
-                failure);
+                failure,
+                session.Generation);
         }
     }
 
@@ -884,34 +951,127 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         }
     }
 
-    private void Observe(CapturePacketObservation observation)
+    private void Observe(
+        long generation,
+        CapturePacketObservation observation)
     {
         var next = observation.Result.Classification
             == Telemetry.Abstractions.Protocol.TelemetryPacketClassification.Compatible
             ? CaptureState.ReceivingCompatibleTraffic
             : CaptureState.IncompatibleTraffic;
+        _testHooks?.ObservationValidated?.Invoke();
+        CaptureWorkflowSnapshot? changed = null;
         lock (_gate)
         {
-            if (_snapshot.State is not (
+            if (generation != _generation
+                || _snapshot.State is not (
                 CaptureState.WaitingForTraffic
                 or CaptureState.ReceivingCompatibleTraffic
                 or CaptureState.IncompatibleTraffic))
             {
                 return;
             }
+
+            if (_snapshot.State != next)
+            {
+                changed = _snapshot = _snapshot with
+                {
+                    State = next,
+                    Counters = CurrentCounters(),
+                };
+            }
         }
 
-        PublishState(next);
+        if (changed is not null)
+        {
+            NotifySnapshotChanged(changed);
+        }
+    }
+
+    private async Task PublishAggregateSnapshotsAsync(
+        ActiveSession session)
+    {
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(
+                        _publicationInterval,
+                        session.Lifetime.Token)
+                    .ConfigureAwait(false);
+                CaptureWorkflowSnapshot? changed = null;
+                lock (_gate)
+                {
+                    if (!ReferenceEquals(_session, session)
+                        || session.Generation != _generation)
+                    {
+                        return;
+                    }
+
+                    var counters = CurrentCounters();
+                    if (counters != _snapshot.Counters)
+                    {
+                        changed = _snapshot = _snapshot with
+                        {
+                            Counters = counters,
+                        };
+                    }
+                }
+
+                if (changed is not null)
+                {
+                    NotifySnapshotChanged(changed);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+            when (session.Lifetime.IsCancellationRequested)
+        {
+            // Session release owns publication-loop cancellation.
+        }
+    }
+
+    private CaptureWorkflowSnapshot PublishActiveState(
+        long generation,
+        CaptureState requiredState,
+        CaptureState nextState)
+    {
+        CaptureWorkflowSnapshot? changed = null;
+        CaptureWorkflowSnapshot current;
+        lock (_gate)
+        {
+            if (generation != _generation
+                || _snapshot.State != requiredState)
+            {
+                return CurrentSnapshot();
+            }
+
+            changed = current = _snapshot = _snapshot with
+            {
+                State = nextState,
+                Counters = CurrentCounters(),
+            };
+        }
+
+        NotifySnapshotChanged(current);
+        return current;
     }
 
     private CaptureWorkflowSnapshot PublishState(
         CaptureState state,
         CaptureCounters? counters = null,
-        RawEvidenceCompletion? completion = null)
+        RawEvidenceCompletion? completion = null,
+        long? generation = null)
     {
         CaptureWorkflowSnapshot snapshot;
         lock (_gate)
         {
+            if (generation.HasValue
+                && generation.Value != _generation)
+            {
+                return CurrentSnapshot();
+            }
+
             snapshot = _snapshot = _snapshot with
             {
                 State = state,
@@ -927,11 +1087,18 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     private CaptureWorkflowSnapshot PublishFailure(
         CaptureState state,
         CaptureFailureKind kind,
-        Exception failure)
+        Exception failure,
+        long? generation = null)
     {
         CaptureWorkflowSnapshot snapshot;
         lock (_gate)
         {
+            if (generation.HasValue
+                && generation.Value != _generation)
+            {
+                return CurrentSnapshot();
+            }
+
             snapshot = _snapshot = _snapshot with
             {
                 State = state,
@@ -1109,9 +1276,10 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             TaskScheduler.Default);
 
     private sealed class SessionObserver(
-        CaptureWorkflow owner) : ICapturePacketObserver
+        CaptureWorkflow owner,
+        long generation) : ICapturePacketObserver
     {
         public void Observe(CapturePacketObservation observation) =>
-            owner.Observe(observation);
+            owner.Observe(generation, observation);
     }
 }

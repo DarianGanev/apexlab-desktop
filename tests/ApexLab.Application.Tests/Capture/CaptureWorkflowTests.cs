@@ -504,6 +504,129 @@ public sealed class CaptureWorkflowTests
     }
 
     [TestMethod]
+    public async Task PacketBurstPublishesAggregateSnapshotsAtBoundedRate()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        await subject.ArmAsync(TestContext.CancellationToken);
+        var publications = 0;
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.IncompatibleTraffic
+                && snapshot.Counters.Classifier.MalformedHeader != 0)
+            {
+                Interlocked.Increment(ref publications);
+            }
+        };
+
+        for (var index = 0; index < 100; index++)
+        {
+            factory.Source.Publish(marker: 0);
+        }
+
+        await WaitUntilAsync(
+            () => subject.Snapshot.Counters.Classifier.MalformedHeader == 100,
+            TimeSpan.FromSeconds(2));
+        await Task.Delay(
+            TimeSpan.FromMilliseconds(300),
+            TestContext.CancellationToken);
+
+        var observedPublications = Volatile.Read(ref publications);
+        Assert.IsTrue(
+            observedPublications is >= 1 and <= 4,
+            $"Expected 1-4 coalesced publications, but observed {observedPublications}.");
+        await subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+    }
+
+    [TestMethod]
+    public async Task CompletedEvidenceWritePublishesWithoutAnotherPacket()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Evidence.BlockWrites();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        await subject.ArmAsync(TestContext.CancellationToken);
+        var written = new TaskCompletionSource<CaptureWorkflowSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.Counters.Evidence.SinkWritten == 1)
+            {
+                written.TrySetResult(snapshot);
+            }
+        };
+
+        factory.Source.Publish(marker: 1);
+        await factory.Evidence.WriteStarted.WaitAsync(
+            TestContext.CancellationToken);
+        factory.Evidence.ReleaseWrites();
+        var observed = await written.Task.WaitAsync(
+            TimeSpan.FromMilliseconds(750),
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(0L, observed.Counters.Evidence.SinkPending);
+        Assert.AreEqual(1L, observed.Counters.Evidence.StagedRecords);
+        await subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+    }
+
+    [TestMethod]
+    public async Task ObservationValidatedBeforeStopCannotOverwriteStoppingState()
+    {
+        using var observationValidated = new ManualResetEventSlim(false);
+        using var allowObservation = new ManualResetEventSlim(false);
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Source.BlockStopUntilReleased();
+        var hooks = new CaptureWorkflowTestHooks
+        {
+            ObservationValidated = () =>
+            {
+                observationValidated.Set();
+                Assert.IsTrue(
+                    allowObservation.Wait(TimeSpan.FromSeconds(5)));
+            },
+        };
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2),
+            hooks);
+        await subject.ArmAsync(TestContext.CancellationToken);
+        factory.Source.Publish(marker: 1);
+        Assert.IsTrue(
+            observationValidated.Wait(TimeSpan.FromSeconds(5)));
+
+        var stop = subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+        await factory.Source.StopStarted.WaitAsync(
+            TestContext.CancellationToken);
+        Assert.AreEqual(CaptureState.Stopping, subject.Snapshot.State);
+        allowObservation.Set();
+        try
+        {
+            await Task.Delay(
+                TimeSpan.FromMilliseconds(50),
+                TestContext.CancellationToken);
+            Assert.AreEqual(CaptureState.Stopping, subject.Snapshot.State);
+        }
+        finally
+        {
+            factory.Source.ReleaseStop();
+        }
+
+        await stop.WaitAsync(TestContext.CancellationToken);
+    }
+
+    [TestMethod]
     public async Task WriteFailureFaultsAndReleasesUnfinalizedOwnership()
     {
         var factory = new ControlledSessionFactory();
@@ -642,6 +765,24 @@ public sealed class CaptureWorkflowTests
     }
 
     public TestContext TestContext { get; set; } = null!;
+
+    private async Task WaitUntilAsync(
+        Func<bool> condition,
+        TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (!condition())
+        {
+            if (DateTime.UtcNow >= deadline)
+            {
+                Assert.Fail("The capture condition did not become true before its deadline.");
+            }
+
+            await Task.Delay(
+                TimeSpan.FromMilliseconds(10),
+                TestContext.CancellationToken);
+        }
+    }
 
     private sealed class ControlledSessionFactory : ICaptureSessionFactory
     {
