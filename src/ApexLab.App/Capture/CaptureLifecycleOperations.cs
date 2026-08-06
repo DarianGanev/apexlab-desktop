@@ -48,5 +48,6 @@ public sealed class CaptureLifecycleOperations(
                 CaptureStopReason.HostShutdown,
                 cancellationToken)
             .ConfigureAwait(false);
+        await workflow.DeferredCleanupCompletion.ConfigureAwait(false);
     }
 }

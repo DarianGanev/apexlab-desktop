@@ -1,5 +1,6 @@
 using ApexLab.App.Capture;
 using ApexLab.Application.Capture;
+using Microsoft.Extensions.Hosting;
 
 namespace ApexLab.IntegrationTests.Lifecycle;
 
@@ -25,6 +26,22 @@ public sealed class CaptureLifecycleOperationsTests
             workflow.Events);
     }
 
+    [TestMethod]
+    public async Task HostedStopWaitsForDeferredCaptureOwnership()
+    {
+        var workflow = new RecordingCaptureWorkflow();
+        workflow.Deferred = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var subject = new CaptureLifecycleOperations(workflow);
+
+        var stop = ((IHostedService)subject).StopAsync(
+            TestContext.CancellationToken);
+
+        Assert.IsFalse(stop.IsCompleted);
+        workflow.Deferred.TrySetResult();
+        await stop.WaitAsync(TestContext.CancellationToken);
+    }
+
     public TestContext TestContext { get; set; } = null!;
 
     private sealed class RecordingCaptureWorkflow : ICaptureWorkflow
@@ -34,7 +51,10 @@ public sealed class CaptureLifecycleOperationsTests
         public CaptureWorkflowSnapshot Snapshot =>
             CaptureWorkflowSnapshot.Idle;
 
-        public Task DeferredCleanupCompletion => Task.CompletedTask;
+        public TaskCompletionSource? Deferred { get; set; }
+
+        public Task DeferredCleanupCompletion =>
+            Deferred?.Task ?? Task.CompletedTask;
 
         public event EventHandler<CaptureWorkflowSnapshot>? SnapshotChanged
         {
@@ -50,8 +70,11 @@ public sealed class CaptureLifecycleOperationsTests
         public Task<CaptureWorkflowSnapshot> StopAsync(
             CaptureStopReason reason,
             CancellationToken cancellationToken = default) =>
-            throw new AssertFailedException(
-                "Lifecycle phases must remain staged.");
+            Task.FromResult(
+                CaptureWorkflowSnapshot.Idle with
+                {
+                    State = CaptureState.Interrupted,
+                });
 
         public Task StopProducersAsync(
             CancellationToken cancellationToken = default)
