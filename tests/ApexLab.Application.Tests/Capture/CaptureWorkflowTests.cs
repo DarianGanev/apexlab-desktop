@@ -61,6 +61,47 @@ public sealed class CaptureWorkflowTests
     }
 
     [TestMethod]
+    public async Task StopDuringCancellationInsensitiveBindingRetainsOwnershipUntilCreationResolves()
+    {
+        var factory = new ControlledSessionFactory
+        {
+            IgnoreCreationCancellation = true,
+        };
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromMilliseconds(50));
+        var arm = subject.ArmAsync(TestContext.CancellationToken);
+        await factory.CreationStarted.WaitAsync(
+            TestContext.CancellationToken);
+
+        var stop = subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+        try
+        {
+            var interrupted = await stop.WaitAsync(
+                TimeSpan.FromMilliseconds(500),
+                TestContext.CancellationToken);
+
+            Assert.AreEqual(CaptureState.Interrupted, interrupted.State);
+            Assert.IsFalse(subject.DeferredCleanupCompletion.IsCompleted);
+            Assert.AreEqual(0, factory.Source.DisposeCalls);
+            Assert.AreEqual(0, factory.Evidence.DisposeCalls);
+        }
+        finally
+        {
+            factory.CompleteCreation();
+        }
+
+        await subject.DeferredCleanupCompletion.WaitAsync(
+            TestContext.CancellationToken);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => arm);
+        Assert.AreEqual(CaptureState.Stopped, subject.Snapshot.State);
+        Assert.AreEqual(1, factory.Source.DisposeCalls);
+        Assert.AreEqual(1, factory.Evidence.DisposeCalls);
+    }
+
+    [TestMethod]
     public async Task CleanStopDrainsFinalizesAndDisposesTheSession()
     {
         var factory = new ControlledSessionFactory();
@@ -277,6 +318,8 @@ public sealed class CaptureWorkflowTests
 
         public int CreateCalls { get; private set; }
 
+        public bool IgnoreCreationCancellation { get; init; }
+
         public Task CreationStarted => _creationStarted.Task;
 
         public async Task<CaptureSessionComponents> CreateAsync(
@@ -285,7 +328,14 @@ public sealed class CaptureWorkflowTests
         {
             CreateCalls++;
             _creationStarted.TrySetResult();
-            await _creation.Task.WaitAsync(cancellationToken);
+            if (IgnoreCreationCancellation)
+            {
+                await _creation.Task;
+            }
+            else
+            {
+                await _creation.Task.WaitAsync(cancellationToken);
+            }
             Evidence.SetCaptureId(captureId);
             return new CaptureSessionComponents(
                 Source,

@@ -21,6 +21,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     private CaptureWorkflowSnapshot _snapshot =
         CaptureWorkflowSnapshot.Idle;
     private Task<CaptureWorkflowSnapshot>? _armTask;
+    private Task? _armOwnershipTask;
     private Task<CaptureWorkflowSnapshot>? _stopTask;
     private Task? _storeFinalizationTask;
     private Task _deferredCleanupCompletion = Task.CompletedTask;
@@ -111,12 +112,21 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         }
 
         SnapshotChanged?.Invoke(this, binding);
-        _ = Task.Run(
+        var ownership = Task.Run(
             () => ArmCoreAsync(
                 binding.CaptureId!,
                 completion,
                 armCancellation),
             CancellationToken.None);
+        lock (_gate)
+        {
+            if (ReferenceEquals(_armCancellation, armCancellation))
+            {
+                _armOwnershipTask = ownership;
+            }
+        }
+
+        ObserveFault(ownership);
         return completion.Task;
     }
 
@@ -188,29 +198,21 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     public async Task StopProducersAsync(
         CancellationToken cancellationToken = default)
     {
-        Task<CaptureWorkflowSnapshot>? armTask;
+        Task? armOwnershipTask;
         CancellationTokenSource? armCancellation;
         ActiveSession? session;
         lock (_gate)
         {
-            armTask = _armTask;
+            armOwnershipTask = _armOwnershipTask;
             armCancellation = _armCancellation;
             session = _session;
         }
 
-        if (armTask is not null && !armTask.IsCompleted)
+        if (armOwnershipTask is not null && !armOwnershipTask.IsCompleted)
         {
             armCancellation?.Cancel();
-            try
-            {
-                await armTask.WaitAsync(cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-                when (armCancellation?.IsCancellationRequested == true)
-            {
-                return;
-            }
+            await armOwnershipTask.WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
 
             lock (_gate)
             {
@@ -296,6 +298,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                     captureId,
                     cancellationToken)
                 .ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
             if (components.EvidenceStore.CaptureId != captureId)
             {
                 throw new InvalidOperationException(
@@ -323,6 +326,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             await coordinator.Started
                 .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
             var waiting = PublishState(
                 CaptureState.WaitingForTraffic);
             completion.TrySetResult(waiting);
@@ -403,25 +407,32 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     {
         try
         {
-            var armTask = _armTask;
-            if (armTask is not null && !armTask.IsCompleted)
+            Task? armOwnershipTask;
+            CancellationTokenSource? armCancellation;
+            lock (_gate)
             {
-                CancellationTokenSource? armCancellation;
-                lock (_gate)
-                {
-                    armCancellation = _armCancellation;
-                }
+                armOwnershipTask = _armOwnershipTask;
+                armCancellation = _armCancellation;
+            }
 
+            if (armOwnershipTask is not null
+                && !armOwnershipTask.IsCompleted)
+            {
                 armCancellation?.Cancel();
                 try
                 {
-                    await armTask.WaitAsync(cancellationToken)
+                    await armOwnershipTask.WaitAsync(
+                            _stopTimeout,
+                            cancellationToken)
                         .ConfigureAwait(false);
                 }
-                catch (OperationCanceledException)
-                    when (armCancellation?.IsCancellationRequested == true)
+                catch (TimeoutException exception)
                 {
-                    // Stop owns cancellation of an in-flight bind.
+                    completion.TrySetResult(
+                        BeginInterruptedBindingCleanup(
+                            armOwnershipTask,
+                            exception));
+                    return;
                 }
             }
 
@@ -648,6 +659,29 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             interruption);
         cleanupStart.TrySetResult();
         return snapshot;
+    }
+
+    private CaptureWorkflowSnapshot BeginInterruptedBindingCleanup(
+        Task armOwnershipTask,
+        Exception interruption)
+    {
+        Task cleanup;
+        lock (_gate)
+        {
+            cleanup = Task.Run(
+                async () =>
+                {
+                    await armOwnershipTask.ConfigureAwait(false);
+                },
+                CancellationToken.None);
+            _deferredCleanupCompletion = cleanup;
+        }
+
+        ObserveFault(cleanup);
+        return PublishFailure(
+            CaptureState.Interrupted,
+            CaptureFailureKind.Interrupted,
+            interruption);
     }
 
     private async Task CompleteDeferredCleanupAsync(
