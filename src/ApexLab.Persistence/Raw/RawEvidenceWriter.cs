@@ -65,11 +65,27 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
         RawEvidenceLimits? limits = null,
         CancellationToken cancellationToken = default)
     {
+        return CreateAsync(
+            paths,
+            RawEvidenceCaptureId.Create(),
+            protocolId,
+            limits,
+            cancellationToken);
+    }
+
+    public static Task<RawEvidenceWriter> CreateAsync(
+        ApplicationPaths paths,
+        RawEvidenceCaptureId captureId,
+        RawEvidenceProtocolId protocolId,
+        RawEvidenceLimits? limits = null,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(paths);
+        ArgumentNullException.ThrowIfNull(captureId);
         ArgumentNullException.ThrowIfNull(protocolId);
         return CreateForTestingAsync(
             paths,
-            RawEvidenceCaptureId.Create(),
+            captureId,
             protocolId,
             limits ?? new RawEvidenceLimits(),
             Stopwatch.Frequency,
@@ -187,8 +203,8 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
                 + RawEvidenceFormat.FooterLength);
             if (projectedDataLength > Limits.MaximumFileBytes)
             {
-                throw new InvalidOperationException(
-                    "The raw evidence file limit would be exceeded.");
+                throw new RawEvidenceLimitReachedException(
+                    RawEvidenceLimitKind.FileSize);
             }
 
             RequireFreeSpace(
@@ -341,7 +357,7 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
                     RawEvidenceFormat.SerializeManifestPreimage(manifest);
                 RequireFreeSpace(
                     ReadAvailableFreeSpace(_availableFreeSpace),
-                    Limits.MinimumFreeSpaceBytes,
+                    minimum: 0,
                     checked(
                         RawEvidenceFormat.FooterLength
                         + manifestPreimage.Length));
@@ -474,8 +490,8 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
                 (Int128)maximumMilliseconds * _stopwatchFrequency);
             if (elapsedMillisecondsNumerator > maximumDurationNumerator)
             {
-                throw new InvalidOperationException(
-                    "The raw evidence duration limit would be exceeded.");
+                throw new RawEvidenceLimitReachedException(
+                    RawEvidenceLimitKind.Duration);
             }
         }
     }
@@ -701,8 +717,8 @@ public sealed class RawEvidenceWriter : IRawEvidenceStore
         if (available < 0
             || (Int128)available < (Int128)minimum + pendingGrowth)
         {
-            throw new IOException(
-                "Insufficient free space remains for raw evidence.");
+            throw new RawEvidenceLimitReachedException(
+                RawEvidenceLimitKind.FreeSpace);
         }
     }
 

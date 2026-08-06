@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Windows.Input;
+using ApexLab.App.Capture;
 using ApexLab.App.Presentation;
 
 namespace ApexLab.App.Shell;
@@ -50,6 +51,8 @@ public sealed class ShellViewModel : ObservableObject
     }
 
     public IReadOnlyList<WorkflowArea> PrimaryAreas => Areas;
+
+    public CaptureViewModel? Capture { get; private set; }
 
     public WorkflowArea SelectedArea
     {
@@ -104,6 +107,18 @@ public sealed class ShellViewModel : ObservableObject
     public ICommand OpenCornerEditorCommand { get; }
 
     public ICommand OpenReplayDiagnosticsCommand { get; }
+
+    public void AttachCapture(CaptureViewModel capture)
+    {
+        ArgumentNullException.ThrowIfNull(capture);
+        if (Capture is not null && !ReferenceEquals(Capture, capture))
+        {
+            throw new InvalidOperationException(
+                "The shell already has a capture workspace.");
+        }
+
+        Capture = capture;
+    }
 
     private void SelectArea(object? parameter)
     {

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
+using ApexLab.App.Lifecycle;
 using Microsoft.Extensions.Hosting;
 
 namespace ApexLab.App;
@@ -11,6 +12,7 @@ public sealed class AppHostLifetime : IDisposable
     private readonly TimeSpan _shutdownTimeout;
     private bool _hostStarted;
     private bool _ownershipReleased;
+    private Task _deferredHostDisposalCompletion = Task.CompletedTask;
 
     public AppHostLifetime(
         IHost host,
@@ -58,6 +60,9 @@ public sealed class AppHostLifetime : IDisposable
         ThrowCleanupFailures(cleanupFailures);
     }
 
+    public Task DeferredHostDisposalCompletion =>
+        Volatile.Read(ref _deferredHostDisposalCompletion);
+
     private List<Exception> ReleaseOwnership()
     {
         if (_ownershipReleased)
@@ -79,6 +84,17 @@ public sealed class AppHostLifetime : IDisposable
             }
         }
 
+        var lifecycleOwnership = GetLifecycleOwnershipCompletion(failures);
+        if (lifecycleOwnership is not null && !lifecycleOwnership.IsCompleted)
+        {
+            var deferredDisposal = DisposeHostAfterAsync(lifecycleOwnership);
+            Volatile.Write(
+                ref _deferredHostDisposalCompletion,
+                deferredDisposal);
+            ObserveFault(deferredDisposal);
+            return failures;
+        }
+
         try
         {
             _host.Dispose();
@@ -89,6 +105,67 @@ public sealed class AppHostLifetime : IDisposable
         }
 
         return failures;
+    }
+
+    private Task? GetLifecycleOwnershipCompletion(
+        ICollection<Exception> failures)
+    {
+        try
+        {
+            var coordinator = _host.Services.GetService(
+                    typeof(ApplicationLifecycleCoordinator))
+                as ApplicationLifecycleCoordinator;
+            return coordinator is null
+                ? null
+                : AwaitLifecycleOwnershipReleaseAsync(coordinator);
+        }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
+            return null;
+        }
+    }
+
+    private static async Task AwaitLifecycleOwnershipReleaseAsync(
+        ApplicationLifecycleCoordinator coordinator)
+    {
+        _ = await coordinator.StopAsync().ConfigureAwait(false);
+
+        while (true)
+        {
+            var observed = coordinator.DeferredCleanupCompletion;
+            await observed.ConfigureAwait(false);
+            if (ReferenceEquals(
+                    observed,
+                    coordinator.DeferredCleanupCompletion))
+            {
+                return;
+            }
+        }
+    }
+
+    private async Task DisposeHostAfterAsync(Task deferredCleanup)
+    {
+        var failures = new List<Exception>();
+        try
+        {
+            await deferredCleanup.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
+        }
+
+        try
+        {
+            _host.Dispose();
+        }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
+        }
+
+        ThrowCleanupFailures(failures);
     }
 
     private static void ThrowPreservingPrimary(
@@ -123,4 +200,12 @@ public sealed class AppHostLifetime : IDisposable
             "ApexLab host shutdown reported multiple failures.",
             cleanupFailures);
     }
+
+    private static void ObserveFault(Task task) =>
+        _ = task.ContinueWith(
+            completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted
+                | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 }
