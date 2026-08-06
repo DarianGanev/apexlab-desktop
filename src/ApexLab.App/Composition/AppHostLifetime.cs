@@ -84,10 +84,10 @@ public sealed class AppHostLifetime : IDisposable
             }
         }
 
-        var deferredCleanup = GetDeferredLifecycleCleanup(failures);
-        if (deferredCleanup is not null && !deferredCleanup.IsCompleted)
+        var lifecycleOwnership = GetLifecycleOwnershipCompletion(failures);
+        if (lifecycleOwnership is not null && !lifecycleOwnership.IsCompleted)
         {
-            var deferredDisposal = DisposeHostAfterAsync(deferredCleanup);
+            var deferredDisposal = DisposeHostAfterAsync(lifecycleOwnership);
             Volatile.Write(
                 ref _deferredHostDisposalCompletion,
                 deferredDisposal);
@@ -107,20 +107,40 @@ public sealed class AppHostLifetime : IDisposable
         return failures;
     }
 
-    private Task? GetDeferredLifecycleCleanup(
+    private Task? GetLifecycleOwnershipCompletion(
         ICollection<Exception> failures)
     {
         try
         {
-            return (_host.Services.GetService(
+            var coordinator = _host.Services.GetService(
                     typeof(ApplicationLifecycleCoordinator))
-                as ApplicationLifecycleCoordinator)?
-                .DeferredCleanupCompletion;
+                as ApplicationLifecycleCoordinator;
+            return coordinator is null
+                ? null
+                : AwaitLifecycleOwnershipReleaseAsync(coordinator);
         }
         catch (Exception exception)
         {
             failures.Add(exception);
             return null;
+        }
+    }
+
+    private static async Task AwaitLifecycleOwnershipReleaseAsync(
+        ApplicationLifecycleCoordinator coordinator)
+    {
+        _ = await coordinator.StopAsync().ConfigureAwait(false);
+
+        while (true)
+        {
+            var observed = coordinator.DeferredCleanupCompletion;
+            await observed.ConfigureAwait(false);
+            if (ReferenceEquals(
+                    observed,
+                    coordinator.DeferredCleanupCompletion))
+            {
+                return;
+            }
         }
     }
 

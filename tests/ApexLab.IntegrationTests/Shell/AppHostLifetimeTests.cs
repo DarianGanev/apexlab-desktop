@@ -177,6 +177,51 @@ public sealed class AppHostLifetimeTests
         }
     }
 
+    [TestMethod]
+    [Timeout(3_000, CooperativeCancellation = true)]
+    public async Task Host_timeout_cannot_dispose_before_coordinator_publishes_deferred_ownership()
+    {
+        var releaseCleanup = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var lease = new RecordingLease();
+        var coordinator = new ApplicationLifecycleCoordinator(
+            lease,
+            new BlockingStopOperations(releaseCleanup.Task),
+            TimeSpan.FromMilliseconds(150));
+        Assert.AreEqual(
+            LifecycleStartOutcome.Started,
+            await coordinator.StartAsync(TestContext.CancellationToken));
+        var host = new CancellationRacingHost(coordinator, lease);
+        var subject = new AppHostLifetime(
+            host,
+            _ => { },
+            TimeSpan.FromMilliseconds(40));
+        subject.Start();
+
+        var exit = Task.Run(subject.Dispose);
+        try
+        {
+            await exit.WaitAsync(TimeSpan.FromMilliseconds(500));
+
+            Assert.AreEqual(0, host.DisposeCount);
+            Assert.AreEqual(0, lease.ReleaseCount);
+            Assert.IsFalse(subject.DeferredHostDisposalCompletion.IsCompleted);
+
+            releaseCleanup.TrySetResult();
+            await subject.DeferredHostDisposalCompletion.WaitAsync(
+                TestContext.CancellationToken);
+
+            Assert.AreEqual(1, host.DisposeCount);
+            Assert.AreEqual(1, lease.ReleaseCount);
+            Assert.IsFalse(host.DisposedBeforeLeaseRelease);
+        }
+        finally
+        {
+            releaseCleanup.TrySetResult();
+            await exit.WaitAsync(TestContext.CancellationToken);
+        }
+    }
+
     public TestContext TestContext { get; set; } = null!;
 
     private sealed class RecordingHost : IHost
@@ -291,6 +336,51 @@ public sealed class AppHostLifetimeTests
         public void Dispose()
         {
             _coordinator.DeferredCleanupCompletion.GetAwaiter().GetResult();
+            DisposeCount++;
+        }
+    }
+
+    private sealed class CancellationRacingHost : IHost
+    {
+        private readonly ApplicationLifecycleCoordinator _coordinator;
+        private readonly RecordingLease _lease;
+
+        public CancellationRacingHost(
+            ApplicationLifecycleCoordinator coordinator,
+            RecordingLease lease)
+        {
+            _coordinator = coordinator;
+            _lease = lease;
+            Services = new SingleServiceProvider(coordinator);
+        }
+
+        public IServiceProvider Services { get; }
+
+        public int DisposeCount { get; private set; }
+
+        public bool DisposedBeforeLeaseRelease { get; private set; }
+
+        public Task StartAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public async Task StopAsync(
+            CancellationToken cancellationToken = default)
+        {
+            var stop = _coordinator.StopAsync();
+            try
+            {
+                await stop.WaitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                // Mirrors a hosted adapter returning on the host deadline.
+            }
+        }
+
+        public void Dispose()
+        {
+            DisposedBeforeLeaseRelease = _lease.ReleaseCount == 0;
             DisposeCount++;
         }
     }
