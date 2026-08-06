@@ -8,7 +8,21 @@ public sealed class CaptureViewModel :
     ObservableObject,
     IDisposable
 {
+    private sealed record CaptureViewProjection(
+        CaptureWorkflowSnapshot Snapshot,
+        CaptureStatusPresentation Presentation,
+        string ReceivedText,
+        string CompatibleText,
+        string ActivePendingText,
+        string DeferredPendingText,
+        string WrittenText,
+        string FinalizedText,
+        bool IsProvisional,
+        string ProvisionalText);
+
     private readonly ICaptureWorkflow _workflow;
+    private readonly Func<CaptureWorkflowSnapshot, CaptureStatusPresentation>
+        _projectStatus;
     private readonly SynchronizationContext? _synchronizationContext;
     private CaptureWorkflowSnapshot _snapshot;
     private string _statusText;
@@ -29,30 +43,34 @@ public sealed class CaptureViewModel :
     private int _disposed;
 
     public CaptureViewModel(ICaptureWorkflow workflow)
+        : this(workflow, CaptureStatusText.For)
+    {
+    }
+
+    internal CaptureViewModel(
+        ICaptureWorkflow workflow,
+        Func<CaptureWorkflowSnapshot, CaptureStatusPresentation>
+            projectStatus)
     {
         ArgumentNullException.ThrowIfNull(workflow);
+        ArgumentNullException.ThrowIfNull(projectStatus);
         _workflow = workflow;
+        _projectStatus = projectStatus;
         _synchronizationContext = SynchronizationContext.Current;
         _snapshot = workflow.Snapshot;
-        var presentation = CaptureStatusText.For(_snapshot);
-        _statusText = presentation.StatusText;
-        _receivedText = Count(
-            _snapshot.Counters.Source.DatagramsObserved);
-        _compatibleText = Count(
-            _snapshot.Counters.Classifier.Compatible);
-        _activePendingText = Count(
-            _snapshot.Counters.Evidence.SinkPending);
-        _deferredPendingText = Count(
-            _snapshot.Counters.Evidence.SinkPendingDeferredCleanup);
-        _writtenText = Count(
-            _snapshot.Counters.Evidence.SinkWritten);
-        _finalizedText = Count(
-            _snapshot.Counters.Evidence.FinalizedRecords);
-        _diagnosticText = presentation.DiagnosticText;
-        _nextStepText = presentation.NextStepText;
-        _durabilityText = presentation.DurabilityText;
-        _isProvisional = _snapshot.IsProvisional;
-        _provisionalText = Provisional(_snapshot);
+        var projection = Project(_snapshot);
+        _statusText = projection.Presentation.StatusText;
+        _receivedText = projection.ReceivedText;
+        _compatibleText = projection.CompatibleText;
+        _activePendingText = projection.ActivePendingText;
+        _deferredPendingText = projection.DeferredPendingText;
+        _writtenText = projection.WrittenText;
+        _finalizedText = projection.FinalizedText;
+        _diagnosticText = projection.Presentation.DiagnosticText;
+        _nextStepText = projection.Presentation.NextStepText;
+        _durabilityText = projection.Presentation.DurabilityText;
+        _isProvisional = projection.IsProvisional;
+        _provisionalText = projection.ProvisionalText;
         ArmCommand = new RelayCommand(
             StartArm,
             () => _armRunning == 0 && _snapshot.CanArm);
@@ -222,34 +240,47 @@ public sealed class CaptureViewModel :
 
     private void OnSnapshotChanged(
         object? sender,
-        CaptureWorkflowSnapshot snapshot) =>
-        Post(() => Apply(snapshot));
-
-    private void Apply(CaptureWorkflowSnapshot snapshot)
+        CaptureWorkflowSnapshot snapshot)
     {
+        var projection = Project(snapshot);
+        Post(() => Apply(projection));
+    }
+
+    private void Apply(CaptureViewProjection projection)
+    {
+        var snapshot = projection.Snapshot;
         _snapshot = snapshot;
-        var presentation = CaptureStatusText.For(snapshot);
-        StatusText = presentation.StatusText;
-        ReceivedText = Count(
-            snapshot.Counters.Source.DatagramsObserved);
-        CompatibleText = Count(
-            snapshot.Counters.Classifier.Compatible);
-        ActivePendingText = Count(
-            snapshot.Counters.Evidence.SinkPending);
-        DeferredPendingText = Count(
-            snapshot.Counters.Evidence.SinkPendingDeferredCleanup);
-        WrittenText = Count(
-            snapshot.Counters.Evidence.SinkWritten);
-        FinalizedText = Count(
-            snapshot.Counters.Evidence.FinalizedRecords);
-        DiagnosticText = presentation.DiagnosticText;
-        NextStepText = presentation.NextStepText;
-        DurabilityText = presentation.DurabilityText;
-        IsProvisional = snapshot.IsProvisional;
-        ProvisionalText = Provisional(snapshot);
+        StatusText = projection.Presentation.StatusText;
+        ReceivedText = projection.ReceivedText;
+        CompatibleText = projection.CompatibleText;
+        ActivePendingText = projection.ActivePendingText;
+        DeferredPendingText = projection.DeferredPendingText;
+        WrittenText = projection.WrittenText;
+        FinalizedText = projection.FinalizedText;
+        DiagnosticText = projection.Presentation.DiagnosticText;
+        NextStepText = projection.Presentation.NextStepText;
+        DurabilityText = projection.Presentation.DurabilityText;
+        IsProvisional = projection.IsProvisional;
+        ProvisionalText = projection.ProvisionalText;
         ObserveDeferredCleanup(snapshot);
         RaiseCommandState();
     }
+
+    private CaptureViewProjection Project(
+        CaptureWorkflowSnapshot snapshot) =>
+        new(
+            snapshot,
+            _projectStatus(snapshot),
+            Count(snapshot.Counters.Source.DatagramsObserved),
+            Count(snapshot.Counters.Classifier.Compatible),
+            Count(snapshot.Counters.Evidence.SinkPending),
+            Count(
+                snapshot.Counters.Evidence
+                    .SinkPendingDeferredCleanup),
+            Count(snapshot.Counters.Evidence.SinkWritten),
+            Count(snapshot.Counters.Evidence.FinalizedRecords),
+            snapshot.IsProvisional,
+            Provisional(snapshot));
 
     private void RaiseCommandState()
     {

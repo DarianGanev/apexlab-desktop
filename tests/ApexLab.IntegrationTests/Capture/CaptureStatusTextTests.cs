@@ -43,7 +43,7 @@ public sealed class CaptureStatusTextTests
         "Arm a new capture when more evidence is needed")]
     [DataRow(
         RawEvidenceLimitKind.FreeSpace,
-        "Capture stopped at the disk safety limit",
+        "Evidence finalized at the disk safety limit",
         "Free local disk space before arming again")]
     public void TypedEvidenceLimitsRemainDistinctAndActionable(
         RawEvidenceLimitKind limit,
@@ -56,6 +56,8 @@ public sealed class CaptureStatusTextTests
             StopReason = CaptureStopReason.LimitReached,
             FailureKind = CaptureFailureKind.EvidenceLimit,
             Failure = new RawEvidenceLimitReachedException(limit),
+            EvidenceLimitKind = limit,
+            Completion = Completion(),
         };
 
         var presentation = CaptureStatusText.For(snapshot);
@@ -63,6 +65,52 @@ public sealed class CaptureStatusTextTests
         Assert.AreEqual(expectedStatus, presentation.StatusText);
         StringAssert.Contains(presentation.NextStepText, expectedAction);
         StringAssert.Contains(presentation.DiagnosticText, limit.ToString());
+    }
+
+    [TestMethod]
+    public void LimitWordingNeverClaimsFinalizationBeforeACompletionManifest()
+    {
+        var snapshot = CaptureWorkflowSnapshot.Idle with
+        {
+            State = CaptureState.Stopping,
+            StopReason = CaptureStopReason.LimitReached,
+            FailureKind = CaptureFailureKind.EvidenceLimit,
+            Failure = new RawEvidenceLimitReachedException(
+                RawEvidenceLimitKind.Duration),
+            EvidenceLimitKind = RawEvidenceLimitKind.Duration,
+        };
+
+        var presentation = CaptureStatusText.For(snapshot);
+
+        StringAssert.Contains(presentation.StatusText, "limit reached");
+        StringAssert.Contains(presentation.StatusText, "finalizing");
+        Assert.IsFalse(
+            presentation.StatusText.Contains(
+                "finalized",
+                StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public void InterruptedLimitKeepsBothOwnershipAndLimitGuidance()
+    {
+        var snapshot = CaptureWorkflowSnapshot.Idle with
+        {
+            State = CaptureState.Interrupted,
+            StopReason = CaptureStopReason.LimitReached,
+            FailureKind = CaptureFailureKind.Interrupted,
+            Failure = new TimeoutException("private timeout"),
+            EvidenceLimitKind = RawEvidenceLimitKind.FreeSpace,
+        };
+
+        var presentation = CaptureStatusText.For(snapshot);
+
+        Assert.AreEqual(
+            "Cleanup continues in the background",
+            presentation.StatusText);
+        StringAssert.Contains(presentation.DiagnosticText, "FreeSpace");
+        StringAssert.Contains(presentation.DiagnosticText, "ownership unresolved");
+        StringAssert.Contains(presentation.NextStepText, "Free local disk space");
+        StringAssert.Contains(presentation.NextStepText, "Keep ApexLab open");
     }
 
     [TestMethod]
@@ -103,7 +151,10 @@ public sealed class CaptureStatusTextTests
         Assert.AreEqual(expectedStatus, presentation.StatusText);
         StringAssert.Contains(presentation.NextStepText, expectedAction);
         Assert.IsFalse(projected.Contains(poison, StringComparison.Ordinal));
+        Assert.IsFalse(projected.Contains(@"C:\private", StringComparison.Ordinal));
+        Assert.IsFalse(projected.Contains("127.0.0.1:20777", StringComparison.Ordinal));
         Assert.IsFalse(projected.Contains("UID=secret", StringComparison.Ordinal));
+        Assert.IsFalse(projected.Contains("hash=abcdef", StringComparison.Ordinal));
         Assert.IsFalse(projected.Contains("payload=marker", StringComparison.Ordinal));
     }
 
@@ -125,4 +176,14 @@ public sealed class CaptureStatusTextTests
             presentation.NextStepText,
             "Verify UDP On, F1 25 mode, 127.0.0.1:20777");
     }
+
+    private static RawEvidenceCompletion Completion() =>
+        new(
+            RawEvidenceCaptureId.Parse(
+                "00112233445546778899aabbccddeeff"),
+            RawEvidenceProtocolId.Parse("f1-25-v3"),
+            recordCount: 0,
+            RawEvidenceLimits.MinimumFileBytes,
+            new string('a', 64),
+            DateTimeOffset.UnixEpoch);
 }

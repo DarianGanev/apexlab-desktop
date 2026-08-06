@@ -504,6 +504,51 @@ public sealed class CaptureWorkflowTests
     }
 
     [TestMethod]
+    public async Task InterruptedLimitStopRetainsTypedLimitThroughDeferredFinalization()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Evidence.BlockFinalizationUntilReleased();
+        var limit = new RawEvidenceLimitReachedException(
+            RawEvidenceLimitKind.FileSize);
+        factory.Evidence.WriteFailure = limit;
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromMilliseconds(50));
+        var interrupted = new TaskCompletionSource<CaptureWorkflowSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.Interrupted)
+            {
+                interrupted.TrySetResult(snapshot);
+            }
+        };
+        await subject.ArmAsync(TestContext.CancellationToken);
+
+        factory.Source.Publish(marker: 1);
+        var provisional = await interrupted.Task.WaitAsync(
+            TimeSpan.FromSeconds(1),
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(CaptureStopReason.LimitReached, provisional.StopReason);
+        Assert.AreEqual(CaptureFailureKind.Interrupted, provisional.FailureKind);
+        Assert.AreEqual(
+            RawEvidenceLimitKind.FileSize,
+            provisional.EvidenceLimitKind);
+
+        factory.Evidence.ReleaseFinalization();
+        await subject.DeferredCleanupCompletion.WaitAsync(
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(CaptureState.Stopped, subject.Snapshot.State);
+        Assert.AreEqual(
+            RawEvidenceLimitKind.FileSize,
+            subject.Snapshot.EvidenceLimitKind);
+        Assert.IsNotNull(subject.Snapshot.Completion);
+    }
+
+    [TestMethod]
     public async Task PacketBurstPublishesAggregateSnapshotsAtBoundedRate()
     {
         var factory = new ControlledSessionFactory();

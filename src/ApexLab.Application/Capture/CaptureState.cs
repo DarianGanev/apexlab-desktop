@@ -43,6 +43,8 @@ public sealed record CaptureWorkflowSnapshot(
     Exception? Failure,
     RawEvidenceCompletion? Completion)
 {
+    public RawEvidenceLimitKind? EvidenceLimitKind { get; init; }
+
     public static CaptureWorkflowSnapshot Idle { get; } =
         new(
             CaptureState.Idle,

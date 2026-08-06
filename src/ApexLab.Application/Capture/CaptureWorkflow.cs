@@ -957,6 +957,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 StopReason = CaptureStopReason.LimitReached,
                 FailureKind = CaptureFailureKind.EvidenceLimit,
                 Failure = failure,
+                EvidenceLimitKind = failure.Kind,
             };
             return true;
         }
@@ -970,7 +971,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         {
             return ReferenceEquals(_session, session)
                 && _snapshot.StopReason == CaptureStopReason.LimitReached
-                && ReferenceEquals(_snapshot.Failure, failure);
+                && _snapshot.EvidenceLimitKind == failure.Kind;
         }
     }
 

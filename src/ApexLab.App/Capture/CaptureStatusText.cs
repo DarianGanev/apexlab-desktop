@@ -15,7 +15,8 @@ public static class CaptureStatusText
     {
         ArgumentNullException.ThrowIfNull(snapshot);
 
-        var limit = FindLimit(snapshot.Failure);
+        var limit = snapshot.EvidenceLimitKind
+            ?? FindLimit(snapshot.Failure);
         return new CaptureStatusPresentation(
             Status(snapshot, limit),
             Diagnostics(snapshot, limit),
@@ -37,18 +38,36 @@ public static class CaptureStatusText
             return "Evidence could not be written";
         }
 
-        if (snapshot.FailureKind == CaptureFailureKind.EvidenceLimit)
+        if (snapshot.State == CaptureState.Interrupted)
         {
-            return limit switch
+            return "Cleanup continues in the background";
+        }
+
+        if (limit is not null
+            || snapshot.FailureKind == CaptureFailureKind.EvidenceLimit)
+        {
+            if (snapshot.State == CaptureState.Stopping)
             {
-                RawEvidenceLimitKind.FileSize =>
-                    "Evidence finalized at the file-size limit",
-                RawEvidenceLimitKind.Duration =>
-                    "Evidence finalized at the duration limit",
-                RawEvidenceLimitKind.FreeSpace =>
-                    "Capture stopped at the disk safety limit",
-                _ => "Capture stopped at an evidence limit",
-            };
+                return LimitName(limit)
+                    + " limit reached; stopping and finalizing evidence";
+            }
+
+            if (snapshot.State == CaptureState.Stopped
+                && snapshot.Completion is not null)
+            {
+                return "Evidence finalized at the "
+                    + LimitName(limit)
+                    + " limit";
+            }
+
+            if (snapshot.State == CaptureState.Stopped)
+            {
+                return "Capture stopped at the "
+                    + LimitName(limit)
+                    + " limit without finalized evidence";
+            }
+
+            return LimitName(limit) + " evidence limit reached";
         }
 
         return snapshot.State switch
@@ -126,7 +145,8 @@ public static class CaptureStatusText
         {
             diagnostics.Add("Loopback UDP port conflict");
         }
-        if (snapshot.FailureKind == CaptureFailureKind.EvidenceLimit)
+        if (limit is not null
+            || snapshot.StopReason == CaptureStopReason.LimitReached)
         {
             diagnostics.Add(
                 $"Evidence limit reached: {limit?.ToString() ?? "Unknown"}");
@@ -216,7 +236,8 @@ public static class CaptureStatusText
                 "Check that the local UDP setup remains available, then arm again.");
         }
 
-        if (snapshot.FailureKind == CaptureFailureKind.EvidenceLimit)
+        if (limit is not null
+            || snapshot.StopReason == CaptureStopReason.LimitReached)
         {
             AddUnique(
                 actions,
@@ -326,6 +347,15 @@ public static class CaptureStatusText
 
         return null;
     }
+
+    private static string LimitName(RawEvidenceLimitKind? limit) =>
+        limit switch
+        {
+            RawEvidenceLimitKind.FileSize => "file-size",
+            RawEvidenceLimitKind.Duration => "duration",
+            RawEvidenceLimitKind.FreeSpace => "disk safety",
+            _ => "evidence",
+        };
 
     private static bool StoppedWithoutCompatibleTraffic(
         CaptureWorkflowSnapshot snapshot) =>

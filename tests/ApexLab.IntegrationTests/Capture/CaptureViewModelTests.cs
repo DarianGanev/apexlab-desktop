@@ -146,10 +146,10 @@ public sealed class CaptureViewModelTests
                 sinkPendingDeferredCleanup: 2,
                 finalizedRecords: 0,
                 stagedRecords: 0)) with
-            {
-                StopReason = CaptureStopReason.User,
-                FailureKind = CaptureFailureKind.Interrupted,
-            });
+        {
+            StopReason = CaptureStopReason.User,
+            FailureKind = CaptureFailureKind.Interrupted,
+        });
 
         Assert.AreEqual("0", subject.ActivePendingText);
         Assert.AreEqual("2", subject.DeferredPendingText);
@@ -166,9 +166,9 @@ public sealed class CaptureViewModelTests
                 sinkPendingDeferredCleanup: 0,
                 finalizedRecords: 2,
                 stagedRecords: 0)) with
-            {
-                Completion = Completion(recordCount: 2),
-            });
+        {
+            Completion = Completion(recordCount: 2),
+        });
 
         Assert.AreEqual("0", subject.DeferredPendingText);
         Assert.IsFalse(subject.IsProvisional);
@@ -230,6 +230,57 @@ public sealed class CaptureViewModelTests
             State = CaptureState.Stopped,
         });
         Assert.IsFalse(subject.ResetCommand.CanExecute(null));
+    }
+
+    [TestMethod]
+    public void SnapshotPresentationIsBuiltBeforeDispatcherPublication()
+    {
+        var previous = SynchronizationContext.Current;
+        var dispatcher = new QueuedSynchronizationContext();
+        SynchronizationContext.SetSynchronizationContext(dispatcher);
+        try
+        {
+            var workflow = new StubWorkflow();
+            var projectionThreads = new List<int>();
+            using var subject = new CaptureViewModel(
+                workflow,
+                snapshot =>
+                {
+                    lock (projectionThreads)
+                    {
+                        projectionThreads.Add(Environment.CurrentManagedThreadId);
+                    }
+                    return CaptureStatusText.For(snapshot);
+                });
+            var uiThread = Environment.CurrentManagedThreadId;
+
+            Task.Factory.StartNew(
+                    () => workflow.Publish(
+                        CaptureWorkflowSnapshot.Idle with
+                        {
+                            State = CaptureState.WaitingForTraffic,
+                            CaptureId = CaptureId(),
+                        }),
+                    CancellationToken.None,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default)
+                .GetAwaiter()
+                .GetResult();
+
+            lock (projectionThreads)
+            {
+                Assert.AreNotEqual(uiThread, projectionThreads[^1]);
+            }
+            Assert.AreEqual("Ready to arm", subject.StatusText);
+
+            dispatcher.Drain();
+
+            Assert.AreEqual("Waiting for F1 25 telemetry", subject.StatusText);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(previous);
+        }
     }
 
     public TestContext TestContext { get; set; } = null!;
@@ -335,5 +386,39 @@ public sealed class CaptureViewModelTests
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class QueuedSynchronizationContext :
+        SynchronizationContext
+    {
+        private readonly Queue<(SendOrPostCallback Callback, object? State)>
+            _callbacks = new();
+
+        public override void Post(
+            SendOrPostCallback callback,
+            object? state)
+        {
+            lock (_callbacks)
+            {
+                _callbacks.Enqueue((callback, state));
+            }
+        }
+
+        public void Drain()
+        {
+            while (true)
+            {
+                (SendOrPostCallback Callback, object? State) item;
+                lock (_callbacks)
+                {
+                    if (!_callbacks.TryDequeue(out item))
+                    {
+                        return;
+                    }
+                }
+
+                item.Callback(item.State);
+            }
+        }
     }
 }
