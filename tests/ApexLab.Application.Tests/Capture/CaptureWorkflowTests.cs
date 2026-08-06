@@ -71,6 +71,16 @@ public sealed class CaptureWorkflowTests
             factory,
             TimeSpan.FromMilliseconds(50));
         var arm = subject.ArmAsync(TestContext.CancellationToken);
+        Task<CaptureWorkflowSnapshot>? prematureRearm = null;
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.Stopped
+                && !subject.DeferredCleanupCompletion.IsCompleted)
+            {
+                prematureRearm ??= subject.ArmAsync(
+                    TestContext.CancellationToken);
+            }
+        };
         await factory.CreationStarted.WaitAsync(
             TestContext.CancellationToken);
 
@@ -99,6 +109,47 @@ public sealed class CaptureWorkflowTests
         Assert.AreEqual(CaptureState.Stopped, subject.Snapshot.State);
         Assert.AreEqual(1, factory.Source.DisposeCalls);
         Assert.AreEqual(1, factory.Evidence.DisposeCalls);
+        Assert.IsNotNull(prematureRearm);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => prematureRearm!);
+    }
+
+    [TestMethod]
+    public async Task PipelineCompletionAtInterruptionBoundaryCannotRegressTerminalState()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Evidence.BlockFinalizationUntilReleased();
+        var stopped = new TaskCompletionSource<CaptureWorkflowSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var hooks = new CaptureWorkflowTestHooks
+        {
+            BeforeInterruptedClaim = () =>
+            {
+                factory.Evidence.ReleaseFinalization();
+                stopped.Task.Wait(TimeSpan.FromSeconds(2));
+            },
+        };
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromMilliseconds(50),
+            hooks);
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.Stopped)
+            {
+                stopped.TrySetResult(snapshot);
+            }
+        };
+        await subject.ArmAsync(TestContext.CancellationToken);
+
+        var result = await subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(CaptureState.Stopped, result.State);
+        Assert.AreEqual(CaptureState.Stopped, subject.Snapshot.State);
+        Assert.IsTrue(subject.DeferredCleanupCompletion.IsCompletedSuccessfully);
     }
 
     [TestMethod]
@@ -504,6 +555,68 @@ public sealed class CaptureWorkflowTests
     }
 
     [TestMethod]
+    public async Task DurationLimitCannotReplaceAnExistingUserStop()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Evidence.Limits = new RawEvidenceLimits(
+            maximumDuration: TimeSpan.FromMilliseconds(75),
+            minimumFreeSpaceBytes: 0);
+        factory.Evidence.BlockFinalizationUntilReleased();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        await subject.ArmAsync(TestContext.CancellationToken);
+
+        var stop = subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+        await factory.Evidence.FinalizationStarted.WaitAsync(
+            TestContext.CancellationToken);
+        await Task.Delay(
+            TimeSpan.FromMilliseconds(150),
+            TestContext.CancellationToken);
+        try
+        {
+            Assert.AreEqual(
+                CaptureStopReason.User,
+                subject.Snapshot.StopReason);
+            Assert.IsNull(subject.Snapshot.EvidenceLimitKind);
+        }
+        finally
+        {
+            factory.Evidence.ReleaseFinalization();
+        }
+
+        var stopped = await stop.WaitAsync(TestContext.CancellationToken);
+        Assert.AreEqual(CaptureStopReason.User, stopped.StopReason);
+    }
+
+    [TestMethod]
+    public async Task CreationTimeEvidenceLimitIsARecoverableLimitStop()
+    {
+        var limit = new RawEvidenceLimitReachedException(
+            RawEvidenceLimitKind.FreeSpace);
+        var factory = new ControlledSessionFactory
+        {
+            CreationFailure = limit,
+        };
+        factory.CompleteCreation();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+
+        var result = await subject.ArmAsync(TestContext.CancellationToken);
+
+        Assert.AreEqual(CaptureState.Stopped, result.State);
+        Assert.AreEqual(CaptureStopReason.LimitReached, result.StopReason);
+        Assert.AreEqual(CaptureFailureKind.EvidenceLimit, result.FailureKind);
+        Assert.AreEqual(RawEvidenceLimitKind.FreeSpace, result.EvidenceLimitKind);
+        Assert.AreSame(limit, result.Failure);
+        Assert.IsTrue(result.CanArm);
+    }
+
+    [TestMethod]
     public async Task InterruptedLimitStopRetainsTypedLimitThroughDeferredFinalization()
     {
         var factory = new ControlledSessionFactory();
@@ -849,6 +962,8 @@ public sealed class CaptureWorkflowTests
 
         public bool IgnoreCreationCancellation { get; init; }
 
+        public Exception? CreationFailure { get; init; }
+
         public Task CreationStarted => _creationStarted.Task;
 
         public async Task<CaptureSessionComponents> CreateAsync(
@@ -865,6 +980,11 @@ public sealed class CaptureWorkflowTests
             {
                 await _creation.Task.WaitAsync(cancellationToken);
             }
+            if (CreationFailure is not null)
+            {
+                throw CreationFailure;
+            }
+
             Evidence.SetCaptureId(captureId);
             return new CaptureSessionComponents(
                 Source,

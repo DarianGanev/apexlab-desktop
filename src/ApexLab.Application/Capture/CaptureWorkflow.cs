@@ -6,6 +6,8 @@ namespace ApexLab.Application.Capture;
 internal sealed class CaptureWorkflowTestHooks
 {
     public Action? ObservationValidated { get; init; }
+
+    public Action? BeforeInterruptedClaim { get; init; }
 }
 
 public sealed class CaptureWorkflow : ICaptureWorkflow
@@ -82,6 +84,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     private ActiveSession? _session;
     private CancellationTokenSource? _armCancellation;
     private bool _disposeRequested;
+    private bool _interruptedNotificationPending;
     private long _generation;
 
     public CaptureWorkflow(
@@ -180,6 +183,12 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                     new InvalidOperationException(
                         "Capture can be armed only while idle or stopped."));
             }
+            if (!_deferredCleanupCompletion.IsCompleted)
+            {
+                return Task.FromException<CaptureWorkflowSnapshot>(
+                    new InvalidOperationException(
+                        "Capture ownership must resolve before another arm."));
+            }
 
             var captureId = RawEvidenceCaptureId.Create();
             generation = checked(++_generation);
@@ -229,6 +238,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         TaskCompletionSource<CaptureWorkflowSnapshot> completion;
         CaptureWorkflowSnapshot stopping;
         var publishStopping = false;
+        long generation;
         lock (_gate)
         {
             if (_snapshot.State is CaptureState.Idle
@@ -249,6 +259,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             completion = new TaskCompletionSource<CaptureWorkflowSnapshot>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             _stopTask = completion.Task;
+            generation = _generation;
         }
 
         if (publishStopping)
@@ -256,7 +267,10 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             NotifySnapshotChanged(stopping);
         }
         _ = Task.Run(
-            () => StopCoreAsync(completion, cancellationToken),
+            () => StopCoreAsync(
+                generation,
+                completion,
+                cancellationToken),
             CancellationToken.None);
         return completion.Task;
     }
@@ -481,9 +495,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
 
             if (cleanupFailure is null)
             {
-                PublishState(
-                    CaptureState.Stopped,
-                    generation: generation);
+                PublishCanceledArmState(generation);
                 completion.TrySetCanceled(cancellationToken);
             }
             else
@@ -511,14 +523,19 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             }
 
             var failure = Combine(exception, cleanupFailure);
-            var recoverable = exception is CaptureSourceStartupException;
-            var failed = PublishFailure(
-                recoverable
-                    ? CaptureState.Stopped
-                    : CaptureState.Faulted,
-                Classify(exception),
-                failure,
-                generation);
+            var failed = exception is RawEvidenceLimitReachedException limit
+                ? PublishCreationLimit(
+                    generation,
+                    limit,
+                    failure,
+                    cleanupFailure is not null)
+                : PublishFailure(
+                    exception is CaptureSourceStartupException
+                        ? CaptureState.Stopped
+                        : CaptureState.Faulted,
+                    Classify(exception),
+                    failure,
+                    generation);
             completion.TrySetResult(failed);
         }
         finally
@@ -538,10 +555,11 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     }
 
     private async Task StopCoreAsync(
+        long generation,
         TaskCompletionSource<CaptureWorkflowSnapshot> completion,
         CancellationToken cancellationToken)
     {
-        var pipeline = StopPipelineAsync();
+        var pipeline = StopPipelineAsync(generation);
         try
         {
             completion.TrySetResult(
@@ -568,7 +586,8 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         }
     }
 
-    private async Task<CaptureWorkflowSnapshot> StopPipelineAsync()
+    private async Task<CaptureWorkflowSnapshot> StopPipelineAsync(
+        long generation)
     {
         Task? armOwnershipTask;
         CancellationTokenSource? armCancellation;
@@ -589,6 +608,11 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot snapshot;
         lock (_gate)
         {
+            if (generation != _generation)
+            {
+                return CurrentSnapshot();
+            }
+
             session = _session;
             snapshot = CurrentSnapshot();
         }
@@ -601,7 +625,9 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 ExceptionDispatchInfo.Capture(snapshot.Failure).Throw();
             }
 
-            return PublishState(CaptureState.Stopped);
+            return PublishState(
+                CaptureState.Stopped,
+                generation: generation);
         }
 
         await StopProducersAsync(CancellationToken.None)
@@ -806,11 +832,19 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         Task<CaptureWorkflowSnapshot> pipeline,
         Exception interruption)
     {
+        _testHooks?.BeforeInterruptedClaim?.Invoke();
         ActiveSession? session;
+        CaptureWorkflowSnapshot snapshot;
+        var cleanupStart = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         Task cleanup;
         lock (_gate)
         {
-            if (pipeline.IsCompleted)
+            if (pipeline.IsCompleted
+                || (_session is null
+                    && _snapshot.State is CaptureState.Stopped
+                        or CaptureState.Faulted
+                        or CaptureState.Disposed))
             {
                 return CurrentSnapshot();
             }
@@ -824,16 +858,33 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             }
 
             cleanup = Task.Run(
-                () => CompleteDeferredStopAsync(pipeline),
+                async () =>
+                {
+                    await cleanupStart.Task.ConfigureAwait(false);
+                    await CompleteDeferredStopAsync(pipeline)
+                        .ConfigureAwait(false);
+                },
                 CancellationToken.None);
             _deferredCleanupCompletion = cleanup;
+            snapshot = _snapshot = _snapshot with
+            {
+                State = CaptureState.Interrupted,
+                Counters = CurrentCounters(),
+                FailureKind = CaptureFailureKind.Interrupted,
+                Failure = interruption,
+            };
+            _interruptedNotificationPending = true;
         }
 
         ObserveFault(cleanup);
-        var snapshot = PublishFailure(
-            CaptureState.Interrupted,
-            CaptureFailureKind.Interrupted,
-            interruption);
+        NotifySnapshotChanged(snapshot);
+        lock (_gate)
+        {
+            _interruptedNotificationPending = false;
+            Monitor.PulseAll(_gate);
+        }
+
+        cleanupStart.TrySetResult();
         return snapshot;
     }
 
@@ -948,6 +999,13 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         lock (_gate)
         {
             if (!ReferenceEquals(_session, session))
+            {
+                return false;
+            }
+            if (_snapshot.State is not (
+                CaptureState.WaitingForTraffic
+                or CaptureState.ReceivingCompatibleTraffic
+                or CaptureState.IncompatibleTraffic))
             {
                 return false;
             }
@@ -1090,6 +1148,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot snapshot;
         lock (_gate)
         {
+            WaitForInterruptedNotification();
             if (generation.HasValue
                 && generation.Value != _generation)
             {
@@ -1117,6 +1176,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot snapshot;
         lock (_gate)
         {
+            WaitForInterruptedNotification();
             if (generation.HasValue
                 && generation.Value != _generation)
             {
@@ -1134,6 +1194,80 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
 
         NotifySnapshotChanged(snapshot);
         return snapshot;
+    }
+
+    private CaptureWorkflowSnapshot PublishCanceledArmState(
+        long generation)
+    {
+        CaptureWorkflowSnapshot snapshot;
+        var publish = false;
+        lock (_gate)
+        {
+            if (generation != _generation)
+            {
+                return CurrentSnapshot();
+            }
+
+            if (_snapshot.State == CaptureState.Binding)
+            {
+                snapshot = _snapshot = _snapshot with
+                {
+                    State = CaptureState.Stopped,
+                    Counters = CurrentCounters(),
+                };
+                publish = true;
+            }
+            else
+            {
+                snapshot = CurrentSnapshot();
+            }
+        }
+
+        if (publish)
+        {
+            NotifySnapshotChanged(snapshot);
+        }
+
+        return snapshot;
+    }
+
+    private CaptureWorkflowSnapshot PublishCreationLimit(
+        long generation,
+        RawEvidenceLimitReachedException limit,
+        Exception failure,
+        bool cleanupFailed)
+    {
+        CaptureWorkflowSnapshot snapshot;
+        lock (_gate)
+        {
+            if (generation != _generation)
+            {
+                return CurrentSnapshot();
+            }
+
+            snapshot = _snapshot = _snapshot with
+            {
+                State = cleanupFailed
+                    ? CaptureState.Faulted
+                    : CaptureState.Stopped,
+                StopReason = CaptureStopReason.LimitReached,
+                FailureKind = CaptureFailureKind.EvidenceLimit,
+                Failure = failure,
+                EvidenceLimitKind = limit.Kind,
+                Counters = CurrentCounters(),
+            };
+        }
+
+        NotifySnapshotChanged(snapshot);
+        return snapshot;
+    }
+
+    private void WaitForInterruptedNotification()
+    {
+        while (_interruptedNotificationPending)
+        {
+            Monitor.Wait(_gate);
+        }
     }
 
     private void NotifySnapshotChanged(CaptureWorkflowSnapshot snapshot)
