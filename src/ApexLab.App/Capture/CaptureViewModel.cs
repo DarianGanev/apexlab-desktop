@@ -17,7 +17,8 @@ public sealed class CaptureViewModel :
     private string _pendingText;
     private string _writtenText;
     private string _finalizedText;
-    private int _operationRunning;
+    private int _armRunning;
+    private int _stopRunning;
     private int _disposed;
 
     public CaptureViewModel(ICaptureWorkflow workflow)
@@ -40,10 +41,10 @@ public sealed class CaptureViewModel :
             _snapshot.Counters.Evidence.FinalizedRecords);
         ArmCommand = new RelayCommand(
             StartArm,
-            () => _operationRunning == 0 && _snapshot.CanArm);
+            () => _armRunning == 0 && _snapshot.CanArm);
         StopCommand = new RelayCommand(
             StartStop,
-            () => _operationRunning == 0 && _snapshot.CanStop);
+            () => _stopRunning == 0 && _snapshot.CanStop);
         workflow.SnapshotChanged += OnSnapshotChanged;
     }
 
@@ -97,26 +98,35 @@ public sealed class CaptureViewModel :
         _workflow.SnapshotChanged -= OnSnapshotChanged;
     }
 
-    private void StartArm() => StartOperation(
-        () => _workflow.ArmAsync());
-
-    private void StartStop() => StartOperation(
-        () => _workflow.StopAsync(CaptureStopReason.User));
-
-    private void StartOperation(
-        Func<Task<CaptureWorkflowSnapshot>> operation)
+    private void StartArm()
     {
-        if (Interlocked.Exchange(ref _operationRunning, 1) != 0)
+        if (Interlocked.Exchange(ref _armRunning, 1) != 0)
         {
             return;
         }
 
         RaiseCommandState();
-        _ = CompleteOperationAsync(operation);
+        _ = CompleteOperationAsync(
+            () => _workflow.ArmAsync(),
+            () => Interlocked.Exchange(ref _armRunning, 0));
+    }
+
+    private void StartStop()
+    {
+        if (Interlocked.Exchange(ref _stopRunning, 1) != 0)
+        {
+            return;
+        }
+
+        RaiseCommandState();
+        _ = CompleteOperationAsync(
+            () => _workflow.StopAsync(CaptureStopReason.User),
+            () => Interlocked.Exchange(ref _stopRunning, 0));
     }
 
     private async Task CompleteOperationAsync(
-        Func<Task<CaptureWorkflowSnapshot>> operation)
+        Func<Task<CaptureWorkflowSnapshot>> operation,
+        Action release)
     {
         try
         {
@@ -128,7 +138,7 @@ public sealed class CaptureViewModel :
         }
         finally
         {
-            Interlocked.Exchange(ref _operationRunning, 0);
+            release();
             Post(RaiseCommandState);
         }
     }

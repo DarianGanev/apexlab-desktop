@@ -33,10 +33,38 @@ public sealed class CaptureViewModelTests
         Assert.AreEqual("0", subject.FinalizedText);
     }
 
+    [TestMethod]
+    public void StopRemainsAvailableWhileArmIsStillBinding()
+    {
+        var workflow = new StubWorkflow
+        {
+            ArmCompletion = new TaskCompletionSource<CaptureWorkflowSnapshot>(
+                TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        using var subject = new CaptureViewModel(workflow);
+
+        subject.ArmCommand.Execute(null);
+        workflow.Publish(
+            CaptureWorkflowSnapshot.Idle with
+            {
+                State = CaptureState.Binding,
+                CaptureId = RawEvidenceCaptureId.Parse(
+                    "00112233445546778899aabbccddeeff"),
+            });
+
+        Assert.IsTrue(subject.StopCommand.CanExecute(null));
+    }
+
     private sealed class StubWorkflow : ICaptureWorkflow
     {
         public CaptureWorkflowSnapshot Snapshot { get; private set; } =
             CaptureWorkflowSnapshot.Idle;
+
+        public TaskCompletionSource<CaptureWorkflowSnapshot>? ArmCompletion
+        {
+            get;
+            init;
+        }
 
         public Task DeferredCleanupCompletion => Task.CompletedTask;
 
@@ -50,7 +78,7 @@ public sealed class CaptureViewModelTests
 
         public Task<CaptureWorkflowSnapshot> ArmAsync(
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(Snapshot);
+            ArmCompletion?.Task ?? Task.FromResult(Snapshot);
 
         public Task<CaptureWorkflowSnapshot> StopAsync(
             CaptureStopReason reason,
