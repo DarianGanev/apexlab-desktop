@@ -8,6 +8,12 @@ internal sealed class CaptureWorkflowTestHooks
     public Action? ObservationValidated { get; init; }
 
     public Action? BeforeInterruptedClaim { get; init; }
+
+    public Action<Task<CaptureWorkflowSnapshot>>? InterruptedClaimStarting
+    {
+        get;
+        init;
+    }
 }
 
 public sealed class CaptureWorkflow : ICaptureWorkflow
@@ -84,6 +90,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     private ActiveSession? _session;
     private CancellationTokenSource? _armCancellation;
     private bool _disposeRequested;
+    private bool _bindingNotificationPending;
     private bool _interruptedNotificationPending;
     private long _generation;
 
@@ -167,6 +174,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         TaskCompletionSource<CaptureWorkflowSnapshot> completion;
         CaptureWorkflowSnapshot binding;
         CancellationTokenSource armCancellation;
+        Task ownership;
         long generation;
         lock (_gate)
         {
@@ -209,25 +217,31 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 CancellationTokenSource.CreateLinkedTokenSource(
                     cancellationToken);
             _armCancellation = armCancellation;
-        }
-
-        NotifySnapshotChanged(binding);
-        var ownership = Task.Run(
-            () => ArmCoreAsync(
-                generation,
-                binding.CaptureId!,
-                completion,
-                armCancellation),
-            CancellationToken.None);
-        lock (_gate)
-        {
-            if (ReferenceEquals(_armCancellation, armCancellation))
-            {
-                _armOwnershipTask = ownership;
-            }
+            _bindingNotificationPending = true;
+            ownership = Task.Run(
+                () => ArmCoreAsync(
+                    generation,
+                    binding.CaptureId!,
+                    completion,
+                    armCancellation),
+                CancellationToken.None);
+            _armOwnershipTask = ownership;
         }
 
         ObserveFault(ownership);
+        try
+        {
+            NotifySnapshotChanged(binding);
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                _bindingNotificationPending = false;
+                Monitor.PulseAll(_gate);
+            }
+        }
+
         return completion.Task;
     }
 
@@ -833,6 +847,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         Exception interruption)
     {
         _testHooks?.BeforeInterruptedClaim?.Invoke();
+        _testHooks?.InterruptedClaimStarting?.Invoke(pipeline);
         ActiveSession? session;
         CaptureWorkflowSnapshot snapshot;
         var cleanupStart = new TaskCompletionSource(
@@ -840,11 +855,10 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         Task cleanup;
         lock (_gate)
         {
-            if (pipeline.IsCompleted
-                || (_session is null
+            if (_session is null
                     && _snapshot.State is CaptureState.Stopped
                         or CaptureState.Faulted
-                        or CaptureState.Disposed))
+                        or CaptureState.Disposed)
             {
                 return CurrentSnapshot();
             }
@@ -1122,6 +1136,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot current;
         lock (_gate)
         {
+            WaitForBindingNotification();
             if (generation != _generation
                 || _snapshot.State != requiredState)
             {
@@ -1148,6 +1163,11 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot snapshot;
         lock (_gate)
         {
+            if (generation.HasValue
+                && _snapshot.State == CaptureState.Binding)
+            {
+                WaitForBindingNotification();
+            }
             WaitForInterruptedNotification();
             if (generation.HasValue
                 && generation.Value != _generation)
@@ -1176,6 +1196,11 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot snapshot;
         lock (_gate)
         {
+            if (generation.HasValue
+                && _snapshot.State == CaptureState.Binding)
+            {
+                WaitForBindingNotification();
+            }
             WaitForInterruptedNotification();
             if (generation.HasValue
                 && generation.Value != _generation)
@@ -1203,6 +1228,10 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         var publish = false;
         lock (_gate)
         {
+            if (_snapshot.State == CaptureState.Binding)
+            {
+                WaitForBindingNotification();
+            }
             if (generation != _generation)
             {
                 return CurrentSnapshot();
@@ -1240,7 +1269,15 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot snapshot;
         lock (_gate)
         {
+            if (_snapshot.State == CaptureState.Binding)
+            {
+                WaitForBindingNotification();
+            }
             if (generation != _generation)
+            {
+                return CurrentSnapshot();
+            }
+            if (_snapshot.State != CaptureState.Binding)
             {
                 return CurrentSnapshot();
             }
@@ -1265,6 +1302,14 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     private void WaitForInterruptedNotification()
     {
         while (_interruptedNotificationPending)
+        {
+            Monitor.Wait(_gate);
+        }
+    }
+
+    private void WaitForBindingNotification()
+    {
+        while (_bindingNotificationPending)
         {
             Monitor.Wait(_gate);
         }

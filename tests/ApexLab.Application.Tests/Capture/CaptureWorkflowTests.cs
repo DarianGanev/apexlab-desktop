@@ -61,6 +61,37 @@ public sealed class CaptureWorkflowTests
     }
 
     [TestMethod]
+    public async Task StopFromBindingNotificationCannotRunBeforeArmOwnershipIsPublished()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        CaptureWorkflowSnapshot? stopped = null;
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.Binding)
+            {
+                stopped = subject.StopAsync(
+                        CaptureStopReason.User,
+                        TestContext.CancellationToken)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+        };
+
+        var arm = subject.ArmAsync(TestContext.CancellationToken);
+
+        Assert.IsNotNull(stopped);
+        Assert.AreEqual(CaptureState.Stopped, stopped.State);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => arm);
+        Assert.AreEqual(CaptureState.Stopped, subject.Snapshot.State);
+        Assert.AreEqual(CaptureStopReason.User, subject.Snapshot.StopReason);
+        Assert.IsNull(subject.Snapshot.Failure);
+    }
+
+    [TestMethod]
     public async Task StopDuringCancellationInsensitiveBindingRetainsOwnershipUntilCreationResolves()
     {
         var factory = new ControlledSessionFactory
@@ -150,6 +181,65 @@ public sealed class CaptureWorkflowTests
         Assert.AreEqual(CaptureState.Stopped, result.State);
         Assert.AreEqual(CaptureState.Stopped, subject.Snapshot.State);
         Assert.IsTrue(subject.DeferredCleanupCompletion.IsCompletedSuccessfully);
+    }
+
+    [TestMethod]
+    public async Task PipelineFaultAtInterruptionBoundaryStillResolvesAndReleasesOwnership()
+    {
+        var failure = new IOException("synthetic boundary stop failure");
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Source.StopFailure = failure;
+        factory.Source.BlockStopUntilReleased();
+        var hooks = new CaptureWorkflowTestHooks
+        {
+            InterruptedClaimStarting = pipeline =>
+            {
+                factory.Source.ReleaseStop();
+                try
+                {
+                    pipeline.GetAwaiter().GetResult();
+                }
+                catch (IOException exception)
+                    when (ReferenceEquals(exception, failure))
+                {
+                    // The fault must already exist when interruption is claimed.
+                }
+            },
+        };
+        var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromMilliseconds(50),
+            hooks);
+        try
+        {
+            await subject.ArmAsync(TestContext.CancellationToken);
+
+            var result = await subject.StopAsync(
+                CaptureStopReason.User,
+                TestContext.CancellationToken);
+
+            Assert.AreEqual(CaptureState.Interrupted, result.State);
+            var thrown = await Assert.ThrowsExactlyAsync<IOException>(
+                () => subject.DeferredCleanupCompletion);
+            Assert.AreSame(failure, thrown);
+            Assert.AreEqual(CaptureState.Faulted, subject.Snapshot.State);
+            Assert.AreSame(failure, subject.Snapshot.Failure);
+            Assert.AreEqual(1, factory.Source.DisposeCalls);
+            Assert.AreEqual(1, factory.Evidence.DisposeCalls);
+        }
+        finally
+        {
+            try
+            {
+                await subject.DisposeAsync();
+            }
+            catch (IOException exception)
+                when (ReferenceEquals(exception, failure))
+            {
+                // Every disposer observes the same terminal cleanup failure.
+            }
+        }
     }
 
     [TestMethod]
