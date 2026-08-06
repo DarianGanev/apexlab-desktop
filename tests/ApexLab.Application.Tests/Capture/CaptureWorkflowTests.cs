@@ -161,6 +161,258 @@ public sealed class CaptureWorkflowTests
     }
 
     [TestMethod]
+    public async Task StopDeadlineBoundsCancellationInsensitiveProducerStop()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Source.BlockStopUntilReleased();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromMilliseconds(50));
+        await subject.ArmAsync(TestContext.CancellationToken);
+
+        var stop = subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+        try
+        {
+            await factory.Source.StopStarted.WaitAsync(
+                TestContext.CancellationToken);
+            var interrupted = await stop.WaitAsync(
+                TimeSpan.FromMilliseconds(500),
+                TestContext.CancellationToken);
+
+            Assert.AreEqual(CaptureState.Interrupted, interrupted.State);
+            Assert.IsFalse(subject.DeferredCleanupCompletion.IsCompleted);
+            Assert.AreEqual(0, factory.Source.DisposeCalls);
+            Assert.AreEqual(0, factory.Evidence.DisposeCalls);
+        }
+        finally
+        {
+            factory.Source.ReleaseStop();
+        }
+
+        await subject.DeferredCleanupCompletion.WaitAsync(
+            TestContext.CancellationToken);
+        Assert.AreEqual(CaptureState.Stopped, subject.Snapshot.State);
+        Assert.AreEqual(1, factory.Source.DisposeCalls);
+        Assert.AreEqual(1, factory.Evidence.DisposeCalls);
+    }
+
+    [TestMethod]
+    public async Task StopDeadlineBoundsCancellationInsensitiveFinalization()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Evidence.BlockFinalizationUntilReleased();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromMilliseconds(50));
+        await subject.ArmAsync(TestContext.CancellationToken);
+
+        var stop = subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+        try
+        {
+            await factory.Evidence.FinalizationStarted.WaitAsync(
+                TestContext.CancellationToken);
+            var interrupted = await stop.WaitAsync(
+                TimeSpan.FromMilliseconds(500),
+                TestContext.CancellationToken);
+
+            Assert.AreEqual(CaptureState.Interrupted, interrupted.State);
+            Assert.IsFalse(subject.DeferredCleanupCompletion.IsCompleted);
+            Assert.AreEqual(0, factory.Source.DisposeCalls);
+            Assert.AreEqual(0, factory.Evidence.DisposeCalls);
+        }
+        finally
+        {
+            factory.Evidence.ReleaseFinalization();
+        }
+
+        await subject.DeferredCleanupCompletion.WaitAsync(
+            TestContext.CancellationToken);
+        Assert.AreEqual(CaptureState.Stopped, subject.Snapshot.State);
+        Assert.AreEqual(1, factory.Source.DisposeCalls);
+        Assert.AreEqual(1, factory.Evidence.DisposeCalls);
+    }
+
+    [TestMethod]
+    public async Task StopAndUnexpectedFailureShareExactlyOneSessionRelease()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Evidence.FailWrites = true;
+        factory.Source.BlockDisposalUntilReleased();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        await subject.ArmAsync(TestContext.CancellationToken);
+        factory.Source.Publish(marker: 1);
+        await factory.Source.DisposeStarted.WaitAsync(
+            TestContext.CancellationToken);
+
+        var stop = subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+        var secondReleaseStarted = false;
+        try
+        {
+            await factory.Source.SecondDisposeStarted.WaitAsync(
+                TimeSpan.FromMilliseconds(250),
+                TestContext.CancellationToken);
+            secondReleaseStarted = true;
+        }
+        catch (TimeoutException)
+        {
+            // One release operation remains blocked at the first disposal.
+        }
+        finally
+        {
+            factory.Source.ReleaseDisposal();
+        }
+
+        await stop.WaitAsync(TestContext.CancellationToken);
+        Assert.IsFalse(secondReleaseStarted);
+        Assert.AreEqual(1, factory.Source.DisposeCalls);
+        Assert.AreEqual(1, factory.Evidence.DisposeCalls);
+    }
+
+    [TestMethod]
+    public async Task ConcurrentDisposeCallersShareCompleteDeferredCleanup()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Evidence.BlockWrites();
+        var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromMilliseconds(50));
+        await subject.ArmAsync(TestContext.CancellationToken);
+        factory.Source.Publish(marker: 1);
+        await factory.Evidence.WriteStarted.WaitAsync(
+            TestContext.CancellationToken);
+        var interrupted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.Interrupted)
+            {
+                interrupted.TrySetResult();
+            }
+        };
+
+        var first = subject.DisposeAsync().AsTask();
+        await interrupted.Task.WaitAsync(TestContext.CancellationToken);
+        var second = subject.DisposeAsync().AsTask();
+        try
+        {
+            Assert.AreSame(first, second);
+            Assert.IsFalse(second.IsCompleted);
+        }
+        finally
+        {
+            factory.Evidence.ReleaseWrites();
+        }
+
+        await Task.WhenAll(first, second).WaitAsync(
+            TestContext.CancellationToken);
+        Assert.AreEqual(CaptureState.Disposed, subject.Snapshot.State);
+        Assert.AreEqual(1, factory.Source.DisposeCalls);
+        Assert.AreEqual(1, factory.Evidence.DisposeCalls);
+    }
+
+    [TestMethod]
+    public async Task DeferredCleanupFailureFaultsCompletionAndPreservesFaultedSnapshot()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Evidence.BlockWrites();
+        factory.Evidence.FinalizeFailure =
+            new IOException("synthetic deferred finalization failure");
+        var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromMilliseconds(50));
+        try
+        {
+            await subject.ArmAsync(TestContext.CancellationToken);
+            factory.Source.Publish(marker: 1);
+            await factory.Evidence.WriteStarted.WaitAsync(
+                TestContext.CancellationToken);
+            var interrupted = await subject.StopAsync(
+                CaptureStopReason.User,
+                TestContext.CancellationToken);
+            Assert.AreEqual(CaptureState.Interrupted, interrupted.State);
+
+            factory.Evidence.ReleaseWrites();
+            var thrown = await Assert.ThrowsExactlyAsync<IOException>(
+                () => subject.DeferredCleanupCompletion);
+
+            Assert.AreSame(factory.Evidence.FinalizeFailure, thrown);
+            Assert.AreEqual(CaptureState.Faulted, subject.Snapshot.State);
+            Assert.AreSame(
+                factory.Evidence.FinalizeFailure,
+                subject.Snapshot.Failure);
+        }
+        finally
+        {
+            factory.Evidence.ReleaseWrites();
+            try
+            {
+                await subject.DisposeAsync();
+            }
+            catch (IOException exception)
+                when (ReferenceEquals(
+                    exception,
+                    factory.Evidence.FinalizeFailure))
+            {
+                // Every disposer observes the same terminal cleanup failure.
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task ThrowingSnapshotSubscriberCannotFaultIngestionOrStrandEvidence()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        await subject.ArmAsync(TestContext.CancellationToken);
+        EventHandler<CaptureWorkflowSnapshot> throwing = (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.ReceivingCompatibleTraffic)
+            {
+                throw new InvalidOperationException(
+                    "synthetic subscriber failure");
+            }
+        };
+        subject.SnapshotChanged += throwing;
+        try
+        {
+            factory.Source.Publish(marker: 1);
+            await factory.Evidence.WriteStarted.WaitAsync(
+                TimeSpan.FromMilliseconds(500),
+                TestContext.CancellationToken);
+        }
+        finally
+        {
+            subject.SnapshotChanged -= throwing;
+        }
+
+        var stopped = await subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+        Assert.AreEqual(CaptureState.Stopped, stopped.State);
+        Assert.AreEqual(1L, stopped.Counters.Evidence.FinalizedRecords);
+        Assert.AreEqual(0L, stopped.Counters.Evidence.SinkPending);
+        Assert.AreEqual(
+            0L,
+            stopped.Counters.Evidence.SinkPendingDeferredCleanup);
+    }
+
+    [TestMethod]
     public async Task WriteFailureFaultsAndReleasesUnfinalizedOwnership()
     {
         var factory = new ControlledSessionFactory();
@@ -355,6 +607,11 @@ public sealed class CaptureWorkflowTests
         private TaskCompletionSource? _startEntered;
         private TaskCompletionSource? _startCancellationObserved;
         private TaskCompletionSource? _startRelease;
+        private TaskCompletionSource? _stopStarted;
+        private TaskCompletionSource? _stopRelease;
+        private TaskCompletionSource? _disposeStarted;
+        private TaskCompletionSource? _secondDisposeStarted;
+        private TaskCompletionSource? _disposeRelease;
         private int _startActive;
 
         public ChannelReader<DatagramEnvelope> Output => _channel.Reader;
@@ -384,6 +641,15 @@ public sealed class CaptureWorkflowTests
 
         public Task StartCancellationObserved =>
             _startCancellationObserved?.Task ?? Task.CompletedTask;
+
+        public Task StopStarted =>
+            _stopStarted?.Task ?? Task.CompletedTask;
+
+        public Task DisposeStarted =>
+            _disposeStarted?.Task ?? Task.CompletedTask;
+
+        public Task SecondDisposeStarted =>
+            _secondDisposeStarted?.Task ?? Task.CompletedTask;
 
         public bool IsStartActive =>
             Volatile.Read(ref _startActive) != 0;
@@ -421,14 +687,21 @@ public sealed class CaptureWorkflowTests
             }
         }
 
-        public Task StopAsync(CancellationToken cancellationToken = default)
+        public async Task StopAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             StopCalls++;
             _channel.Writer.TryComplete();
-            return StopFailure is null
-                ? Task.CompletedTask
-                : Task.FromException(StopFailure);
+            _stopStarted?.TrySetResult();
+            if (_stopRelease is not null)
+            {
+                await _stopRelease.Task;
+            }
+
+            if (StopFailure is not null)
+            {
+                throw StopFailure;
+            }
         }
 
         public void Publish(byte marker)
@@ -458,12 +731,43 @@ public sealed class CaptureWorkflowTests
 
         public void ReleaseStart() => _startRelease?.TrySetResult();
 
-        public ValueTask DisposeAsync()
+        public void BlockStopUntilReleased()
+        {
+            _stopStarted = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _stopRelease = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        public void ReleaseStop() => _stopRelease?.TrySetResult();
+
+        public void BlockDisposalUntilReleased()
+        {
+            _disposeStarted = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _secondDisposeStarted = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _disposeRelease = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        public void ReleaseDisposal() =>
+            _disposeRelease?.TrySetResult();
+
+        public async ValueTask DisposeAsync()
         {
             DisposeCalls++;
             DisposedWhileStartActive = IsStartActive;
+            _disposeStarted?.TrySetResult();
+            if (DisposeCalls > 1)
+            {
+                _secondDisposeStarted?.TrySetResult();
+            }
+            if (_disposeRelease is not null)
+            {
+                await _disposeRelease.Task;
+            }
             _channel.Writer.TryComplete();
-            return ValueTask.CompletedTask;
         }
     }
 
@@ -471,7 +775,10 @@ public sealed class CaptureWorkflowTests
     {
         private readonly TaskCompletionSource _writeStarted =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _finalizationStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         private TaskCompletionSource? _writeRelease;
+        private TaskCompletionSource? _finalizationRelease;
         private long _written;
 
         public RawEvidenceCaptureId CaptureId { get; private set; } =
@@ -497,6 +804,8 @@ public sealed class CaptureWorkflowTests
         public bool DisposedWhileSourceStartActive { get; private set; }
 
         public Task WriteStarted => _writeStarted.Task;
+
+        public Task FinalizationStarted => _finalizationStarted.Task;
 
         public void SetCaptureId(RawEvidenceCaptureId captureId) =>
             CaptureId = captureId;
@@ -526,25 +835,36 @@ public sealed class CaptureWorkflowTests
 
         public void ReleaseWrites() => _writeRelease?.TrySetResult();
 
-        public Task<RawEvidenceCompletion> FinalizeAsync(
+        public void BlockFinalizationUntilReleased() =>
+            _finalizationRelease = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void ReleaseFinalization() =>
+            _finalizationRelease?.TrySetResult();
+
+        public async Task<RawEvidenceCompletion> FinalizeAsync(
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             FinalizeCalls++;
-            if (FinalizeFailure is not null)
+            _finalizationStarted.TrySetResult();
+            if (_finalizationRelease is not null)
             {
-                return Task.FromException<RawEvidenceCompletion>(
-                    FinalizeFailure);
+                await _finalizationRelease.Task;
             }
 
-            return Task.FromResult(
-                new RawEvidenceCompletion(
-                    CaptureId,
-                    ProtocolId,
-                    Interlocked.Read(ref _written),
-                    RawEvidenceLimits.MinimumFileBytes,
-                    new string('0', 64),
-                    DateTimeOffset.UnixEpoch));
+            if (FinalizeFailure is not null)
+            {
+                throw FinalizeFailure;
+            }
+
+            return new RawEvidenceCompletion(
+                CaptureId,
+                ProtocolId,
+                Interlocked.Read(ref _written),
+                RawEvidenceLimits.MinimumFileBytes,
+                new string('0', 64),
+                DateTimeOffset.UnixEpoch);
         }
 
         public ValueTask DisposeAsync()

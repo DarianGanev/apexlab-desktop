@@ -5,11 +5,54 @@ namespace ApexLab.Application.Capture;
 
 public sealed class CaptureWorkflow : ICaptureWorkflow
 {
-    private sealed record ActiveSession(
-        CaptureSessionComponents Components,
-        CaptureIngestionCoordinator Coordinator,
-        CancellationTokenSource Lifetime,
-        Task RunTask);
+    private sealed class ActiveSession(
+        CaptureSessionComponents components,
+        CaptureIngestionCoordinator coordinator,
+        CancellationTokenSource lifetime,
+        Task runTask)
+    {
+        private readonly object _releaseGate = new();
+        private Task<SessionRelease>? _releaseTask;
+        private bool _transferPendingEvidence;
+
+        public CaptureSessionComponents Components { get; } = components;
+
+        public CaptureIngestionCoordinator Coordinator { get; } = coordinator;
+
+        public CancellationTokenSource Lifetime { get; } = lifetime;
+
+        public Task RunTask { get; } = runTask;
+
+        public bool TransferPendingEvidenceRequested
+        {
+            get
+            {
+                lock (_releaseGate)
+                {
+                    return _transferPendingEvidence;
+                }
+            }
+        }
+
+        public void RequestPendingEvidenceTransfer()
+        {
+            lock (_releaseGate)
+            {
+                _transferPendingEvidence = true;
+            }
+        }
+
+        public Task<SessionRelease> GetOrCreateRelease(
+            bool transferPendingEvidence,
+            Func<Task<SessionRelease>> create)
+        {
+            lock (_releaseGate)
+            {
+                _transferPendingEvidence |= transferPendingEvidence;
+                return _releaseTask ??= create();
+            }
+        }
+    }
 
     private sealed record SessionRelease(
         CaptureCounters Counters,
@@ -25,6 +68,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     private Task<CaptureWorkflowSnapshot>? _stopTask;
     private Task? _storeFinalizationTask;
     private Task _deferredCleanupCompletion = Task.CompletedTask;
+    private Task? _disposeTask;
     private ActiveSession? _session;
     private CancellationTokenSource? _armCancellation;
     private bool _disposeRequested;
@@ -111,7 +155,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             _armCancellation = armCancellation;
         }
 
-        SnapshotChanged?.Invoke(this, binding);
+        NotifySnapshotChanged(binding);
         var ownership = Task.Run(
             () => ArmCoreAsync(
                 binding.CaptureId!,
@@ -161,7 +205,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             _stopTask = completion.Task;
         }
 
-        SnapshotChanged?.Invoke(this, stopping);
+        NotifySnapshotChanged(stopping);
         _ = Task.Run(
             () => StopCoreAsync(completion, cancellationToken),
             CancellationToken.None);
@@ -192,7 +236,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             _stopTask = null;
         }
 
-        SnapshotChanged?.Invoke(this, stopped);
+        NotifySnapshotChanged(stopped);
     }
 
     public async Task StopProducersAsync(
@@ -253,15 +297,19 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         lock (_gate)
         {
-            if (_disposeRequested)
-            {
-                return;
-            }
+            return new ValueTask(
+                _disposeTask ??= DisposeCoreAsync());
+        }
+    }
 
+    private async Task DisposeCoreAsync()
+    {
+        lock (_gate)
+        {
             _disposeRequested = true;
         }
 
@@ -280,7 +328,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             };
         }
 
-        SnapshotChanged?.Invoke(this, disposed);
+        NotifySnapshotChanged(disposed);
     }
 
     private async Task ArmCoreAsync(
@@ -405,66 +453,24 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         TaskCompletionSource<CaptureWorkflowSnapshot> completion,
         CancellationToken cancellationToken)
     {
+        var pipeline = StopPipelineAsync();
         try
         {
-            Task? armOwnershipTask;
-            CancellationTokenSource? armCancellation;
-            lock (_gate)
-            {
-                armOwnershipTask = _armOwnershipTask;
-                armCancellation = _armCancellation;
-            }
-
-            if (armOwnershipTask is not null
-                && !armOwnershipTask.IsCompleted)
-            {
-                armCancellation?.Cancel();
-                try
-                {
-                    await armOwnershipTask.WaitAsync(
-                            _stopTimeout,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch (TimeoutException exception)
-                {
-                    completion.TrySetResult(
-                        BeginInterruptedBindingCleanup(
-                            armOwnershipTask,
-                            exception));
-                    return;
-                }
-            }
-
-            ActiveSession? session;
-            lock (_gate)
-            {
-                session = _session;
-            }
-
-            if (session is null)
-            {
-                completion.TrySetResult(
-                    PublishState(CaptureState.Stopped));
-                return;
-            }
-
-            await StopProducersAsync(cancellationToken)
-                .ConfigureAwait(false);
-            await DrainWorkAsync(cancellationToken)
-                .WaitAsync(_stopTimeout, cancellationToken)
-                .ConfigureAwait(false);
-            await FinalizeStoresAsync(cancellationToken)
-                .ConfigureAwait(false);
-            completion.TrySetResult(Snapshot);
+            completion.TrySetResult(
+                await pipeline.WaitAsync(
+                        _stopTimeout,
+                        cancellationToken)
+                    .ConfigureAwait(false));
         }
         catch (TimeoutException exception)
         {
-            completion.TrySetResult(BeginInterruptedCleanup(exception));
+            completion.TrySetResult(
+                BeginInterruptedCleanup(pipeline, exception));
         }
         catch (OperationCanceledException exception)
         {
-            completion.TrySetResult(BeginInterruptedCleanup(exception));
+            completion.TrySetResult(
+                BeginInterruptedCleanup(pipeline, exception));
         }
         catch (Exception exception)
         {
@@ -472,6 +478,59 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 await ResolveStopFailureAsync(exception)
                     .ConfigureAwait(false));
         }
+    }
+
+    private async Task<CaptureWorkflowSnapshot> StopPipelineAsync()
+    {
+        Task? armOwnershipTask;
+        CancellationTokenSource? armCancellation;
+        lock (_gate)
+        {
+            armOwnershipTask = _armOwnershipTask;
+            armCancellation = _armCancellation;
+        }
+
+        if (armOwnershipTask is not null
+            && !armOwnershipTask.IsCompleted)
+        {
+            armCancellation?.Cancel();
+            await armOwnershipTask.ConfigureAwait(false);
+        }
+
+        ActiveSession? session;
+        CaptureWorkflowSnapshot snapshot;
+        lock (_gate)
+        {
+            session = _session;
+            snapshot = CurrentSnapshot();
+        }
+
+        if (session is null)
+        {
+            if (snapshot.State == CaptureState.Faulted
+                && snapshot.Failure is not null)
+            {
+                ExceptionDispatchInfo.Capture(snapshot.Failure).Throw();
+            }
+
+            return PublishState(CaptureState.Stopped);
+        }
+
+        await StopProducersAsync(CancellationToken.None)
+            .ConfigureAwait(false);
+        try
+        {
+            await DrainWorkAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+            when (session.Lifetime.IsCancellationRequested)
+        {
+            // A timed-out pipeline owns cancellation and still finalizes salvageable writes.
+        }
+        await FinalizeStoresAsync(CancellationToken.None)
+            .ConfigureAwait(false);
+        return Snapshot;
     }
 
     private async Task FinalizeStoresCoreAsync(
@@ -557,12 +616,20 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             failure);
     }
 
-    private async Task<SessionRelease> ReleaseSessionAsync(
+    private Task<SessionRelease> ReleaseSessionAsync(
         ActiveSession session,
         bool transferPendingEvidence)
     {
+        return session.GetOrCreateRelease(
+            transferPendingEvidence,
+            () => ReleaseSessionCoreAsync(session));
+    }
+
+    private async Task<SessionRelease> ReleaseSessionCoreAsync(
+        ActiveSession session)
+    {
         var failures = new List<Exception>();
-        if (transferPendingEvidence)
+        if (session.TransferPendingEvidenceRequested)
         {
             try
             {
@@ -587,6 +654,18 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         catch (Exception exception)
         {
             AddDistinct(failures, exception);
+        }
+
+        if (session.TransferPendingEvidenceRequested)
+        {
+            try
+            {
+                session.Coordinator.TransferEvidenceToDeferredCleanup();
+            }
+            catch (Exception exception)
+            {
+                AddDistinct(failures, exception);
+            }
         }
 
         CaptureCounters counters;
@@ -625,29 +704,28 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     }
 
     private CaptureWorkflowSnapshot BeginInterruptedCleanup(
+        Task<CaptureWorkflowSnapshot> pipeline,
         Exception interruption)
     {
         ActiveSession? session;
-        var cleanupStart = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
         Task cleanup;
         lock (_gate)
         {
-            session = _session;
-            if (session is null)
+            if (pipeline.IsCompleted)
             {
-                return _snapshot;
+                return CurrentSnapshot();
             }
 
-            session.Coordinator.TransferEvidenceToDeferredCleanup();
-            session.Lifetime.Cancel();
+            session = _session;
+            if (session is not null)
+            {
+                session.RequestPendingEvidenceTransfer();
+                session.Coordinator.TransferEvidenceToDeferredCleanup();
+                session.Lifetime.Cancel();
+            }
+
             cleanup = Task.Run(
-                async () =>
-                {
-                    await cleanupStart.Task.ConfigureAwait(false);
-                    await CompleteDeferredCleanupAsync(session)
-                        .ConfigureAwait(false);
-                },
+                () => CompleteDeferredStopAsync(pipeline),
                 CancellationToken.None);
             _deferredCleanupCompletion = cleanup;
         }
@@ -657,111 +735,24 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             CaptureState.Interrupted,
             CaptureFailureKind.Interrupted,
             interruption);
-        cleanupStart.TrySetResult();
         return snapshot;
     }
 
-    private CaptureWorkflowSnapshot BeginInterruptedBindingCleanup(
-        Task armOwnershipTask,
-        Exception interruption)
+    private async Task CompleteDeferredStopAsync(
+        Task<CaptureWorkflowSnapshot> pipeline)
     {
-        Task cleanup;
-        lock (_gate)
-        {
-            cleanup = Task.Run(
-                async () =>
-                {
-                    await armOwnershipTask.ConfigureAwait(false);
-                },
-                CancellationToken.None);
-            _deferredCleanupCompletion = cleanup;
-        }
-
-        ObserveFault(cleanup);
-        return PublishFailure(
-            CaptureState.Interrupted,
-            CaptureFailureKind.Interrupted,
-            interruption);
-    }
-
-    private async Task CompleteDeferredCleanupAsync(
-        ActiveSession session)
-    {
-        var failures = new List<Exception>();
-        RawEvidenceCompletion? completion = null;
         try
         {
-            await session.RunTask.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-            when (session.Lifetime.IsCancellationRequested)
-        {
-            // Cancellation transfers any unread source backlog to abandonment.
-        }
-        catch (Exception exception)
-        {
-            failures.Add(exception);
-        }
-
-        if (failures.Count == 0)
-        {
-            try
-            {
-                completion = await session.Coordinator
-                    .FinalizeEvidenceAsync(CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                failures.Add(exception);
-            }
-        }
-
-        var cleanupFailure = await DisposeComponentsAsync(
-                session.Components)
-            .ConfigureAwait(false);
-        if (cleanupFailure is not null)
-        {
-            failures.Add(cleanupFailure);
-        }
-
-        session.Lifetime.Dispose();
-        CaptureCounters counters;
-        try
-        {
-            counters = session.Coordinator.CaptureCounters;
-        }
-        catch (Exception exception)
-        {
-            failures.Add(exception);
-            counters = Snapshot.Counters;
-        }
-
-        lock (_gate)
-        {
-            if (ReferenceEquals(_session, session))
-            {
-                _session = null;
-            }
-        }
-
-        if (failures.Count == 0)
-        {
-            PublishState(
-                CaptureState.Stopped,
-                counters,
-                completion);
+            await pipeline.ConfigureAwait(false);
             return;
         }
-
-        PublishFailure(
-            CaptureState.Faulted,
-            Classify(failures[0]),
-            failures.Count == 1
-                ? failures[0]
-                : new AggregateException(
-                    "Deferred capture cleanup reported multiple failures.",
-                    failures));
+        catch (Exception primaryFailure)
+        {
+            var resolved = await ResolveStopFailureAsync(primaryFailure)
+                .ConfigureAwait(false);
+            ExceptionDispatchInfo.Capture(
+                resolved.Failure ?? primaryFailure).Throw();
+        }
     }
 
     private async Task ObserveUnexpectedCompletionAsync(
@@ -787,22 +778,20 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 }
             }
 
-            var counters = session.Coordinator.CaptureCounters;
-            var cleanupFailure = await DisposeComponentsAsync(
-                    session.Components)
+            var release = await ReleaseSessionAsync(
+                    session,
+                    transferPendingEvidence: true)
                 .ConfigureAwait(false);
-            session.Lifetime.Dispose();
-            var failure = Combine(exception, cleanupFailure);
+            var failure = CombineFailures(
+                    "Capture failed and cleanup also reported a failure.",
+                    exception,
+                    release.Failure)
+                ?? exception;
             lock (_gate)
             {
-                if (ReferenceEquals(_session, session))
-                {
-                    _session = null;
-                }
-
                 _snapshot = _snapshot with
                 {
-                    Counters = counters,
+                    Counters = release.Counters,
                 };
             }
 
@@ -849,7 +838,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             };
         }
 
-        SnapshotChanged?.Invoke(this, snapshot);
+        NotifySnapshotChanged(snapshot);
         return snapshot;
     }
 
@@ -870,8 +859,30 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             };
         }
 
-        SnapshotChanged?.Invoke(this, snapshot);
+        NotifySnapshotChanged(snapshot);
         return snapshot;
+    }
+
+    private void NotifySnapshotChanged(CaptureWorkflowSnapshot snapshot)
+    {
+        var handlers = SnapshotChanged;
+        if (handlers is null)
+        {
+            return;
+        }
+
+        foreach (EventHandler<CaptureWorkflowSnapshot> handler
+                 in handlers.GetInvocationList())
+        {
+            try
+            {
+                handler(this, snapshot);
+            }
+            catch
+            {
+                // Presentation observers cannot own or corrupt capture work.
+            }
+        }
     }
 
     private CaptureWorkflowSnapshot CurrentSnapshot() =>
