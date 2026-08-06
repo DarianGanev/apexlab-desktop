@@ -413,6 +413,97 @@ public sealed class CaptureWorkflowTests
     }
 
     [TestMethod]
+    [DataRow(RawEvidenceLimitKind.FileSize)]
+    [DataRow(RawEvidenceLimitKind.FreeSpace)]
+    public async Task EvidenceLimitFinalizesSalvageAndPublishesDistinctStop(
+        RawEvidenceLimitKind kind)
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        var terminal = new TaskCompletionSource<CaptureWorkflowSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.Stopped
+                && snapshot.StopReason == CaptureStopReason.LimitReached)
+            {
+                terminal.TrySetResult(snapshot);
+            }
+        };
+        await subject.ArmAsync(TestContext.CancellationToken);
+        factory.Source.Publish(marker: 1);
+        await factory.Evidence.FirstWriteCompleted.WaitAsync(
+            TestContext.CancellationToken);
+        var limit = new RawEvidenceLimitReachedException(kind);
+        factory.Evidence.WriteFailure = limit;
+
+        factory.Source.Publish(marker: 1);
+        var stopped = await terminal.Task.WaitAsync(
+            TimeSpan.FromSeconds(2),
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(CaptureState.Stopped, stopped.State);
+        Assert.AreEqual(
+            CaptureStopReason.LimitReached,
+            stopped.StopReason);
+        Assert.AreEqual(
+            CaptureFailureKind.EvidenceLimit,
+            stopped.FailureKind);
+        Assert.AreSame(limit, stopped.Failure);
+        Assert.IsNotNull(stopped.Completion);
+        Assert.AreEqual(1L, stopped.Completion.RecordCount);
+        Assert.AreEqual(2L, stopped.Counters.Classifier.Compatible);
+        Assert.AreEqual(1L, stopped.Counters.Evidence.SinkWritten);
+        Assert.AreEqual(1L, stopped.Counters.Evidence.SinkWriteFailed);
+        Assert.AreEqual(1L, stopped.Counters.Evidence.FinalizedRecords);
+        Assert.AreEqual(0L, stopped.Counters.Evidence.StagedRecords);
+        Assert.AreEqual(1, factory.Evidence.FinalizeCalls);
+        Assert.AreEqual(1, factory.Source.DisposeCalls);
+        Assert.AreEqual(1, factory.Evidence.DisposeCalls);
+    }
+
+    [TestMethod]
+    public async Task DurationLimitStopsAndFinalizesWithoutWaitingForAnotherPacket()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Evidence.Limits = new RawEvidenceLimits(
+            maximumDuration: TimeSpan.FromMilliseconds(50),
+            minimumFreeSpaceBytes: 0);
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        var terminal = new TaskCompletionSource<CaptureWorkflowSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.Stopped
+                && snapshot.StopReason == CaptureStopReason.LimitReached)
+            {
+                terminal.TrySetResult(snapshot);
+            }
+        };
+
+        await subject.ArmAsync(TestContext.CancellationToken);
+        var stopped = await terminal.Task.WaitAsync(
+            TimeSpan.FromMilliseconds(750),
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(
+            CaptureFailureKind.EvidenceLimit,
+            stopped.FailureKind);
+        var limit = Assert.IsInstanceOfType<RawEvidenceLimitReachedException>(
+            stopped.Failure);
+        Assert.AreEqual(RawEvidenceLimitKind.Duration, limit.Kind);
+        Assert.AreEqual(0L, stopped.Counters.Classifier.Compatible);
+        Assert.AreEqual(0L, stopped.Completion?.RecordCount);
+        Assert.AreEqual(1, factory.Evidence.FinalizeCalls);
+    }
+
+    [TestMethod]
     public async Task WriteFailureFaultsAndReleasesUnfinalizedOwnership()
     {
         var factory = new ControlledSessionFactory();
@@ -777,6 +868,8 @@ public sealed class CaptureWorkflowTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _finalizationStarted =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _firstWriteCompleted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         private TaskCompletionSource? _writeRelease;
         private TaskCompletionSource? _finalizationRelease;
         private long _written;
@@ -788,7 +881,7 @@ public sealed class CaptureWorkflowTests
         public RawEvidenceProtocolId ProtocolId { get; } =
             RawEvidenceProtocolId.Parse("synthetic-v1");
 
-        public RawEvidenceLimits Limits { get; } =
+        public RawEvidenceLimits Limits { get; set; } =
             new(minimumFreeSpaceBytes: 0);
 
         public int FinalizeCalls { get; private set; }
@@ -796,6 +889,8 @@ public sealed class CaptureWorkflowTests
         public int DisposeCalls { get; private set; }
 
         public bool FailWrites { get; set; }
+
+        public Exception? WriteFailure { get; set; }
 
         public Exception? FinalizeFailure { get; set; }
 
@@ -806,6 +901,8 @@ public sealed class CaptureWorkflowTests
         public Task WriteStarted => _writeStarted.Task;
 
         public Task FinalizationStarted => _finalizationStarted.Task;
+
+        public Task FirstWriteCompleted => _firstWriteCompleted.Task;
 
         public void SetCaptureId(RawEvidenceCaptureId captureId) =>
             CaptureId = captureId;
@@ -826,7 +923,13 @@ public sealed class CaptureWorkflowTests
                 throw new IOException("synthetic evidence write failed");
             }
 
+            if (WriteFailure is not null)
+            {
+                throw WriteFailure;
+            }
+
             Interlocked.Increment(ref _written);
+            _firstWriteCompleted.TrySetResult();
         }
 
         public void BlockWrites() =>

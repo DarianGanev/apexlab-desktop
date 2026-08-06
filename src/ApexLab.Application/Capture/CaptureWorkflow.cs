@@ -379,6 +379,7 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 CaptureState.WaitingForTraffic);
             completion.TrySetResult(waiting);
             _ = ObserveUnexpectedCompletionAsync(session);
+            ObserveFault(ObserveDurationLimitAsync(session));
         }
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)
@@ -523,6 +524,10 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
             await DrainWorkAsync(CancellationToken.None)
                 .ConfigureAwait(false);
         }
+        catch (RawEvidenceLimitReachedException exception)
+        {
+            RecordLimitOutcome(session, exception);
+        }
         catch (OperationCanceledException)
             when (session.Lifetime.IsCancellationRequested)
         {
@@ -651,6 +656,11 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         {
             // Expected when cleanup cancels source startup or ingestion.
         }
+        catch (RawEvidenceLimitReachedException exception)
+            when (IsExpectedLimitStop(session, exception))
+        {
+            // A typed admission limit is the requested terminal outcome.
+        }
         catch (Exception exception)
         {
             AddDistinct(failures, exception);
@@ -767,6 +777,18 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         {
             return;
         }
+        catch (RawEvidenceLimitReachedException exception)
+        {
+            if (RecordLimitOutcome(session, exception))
+            {
+                await StopAsync(
+                        CaptureStopReason.LimitReached,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            return;
+        }
         catch (Exception exception)
         {
             lock (_gate)
@@ -799,6 +821,66 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                 CaptureState.Faulted,
                 Classify(exception),
                 failure);
+        }
+    }
+
+    private async Task ObserveDurationLimitAsync(
+        ActiveSession session)
+    {
+        try
+        {
+            await Task.Delay(
+                    session.Components.EvidenceStore.Limits.MaximumDuration,
+                    session.Lifetime.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+            when (session.Lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+
+        var limit = new RawEvidenceLimitReachedException(
+            RawEvidenceLimitKind.Duration);
+        if (RecordLimitOutcome(session, limit))
+        {
+            await StopAsync(
+                    CaptureStopReason.LimitReached,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private bool RecordLimitOutcome(
+        ActiveSession session,
+        RawEvidenceLimitReachedException failure)
+    {
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_session, session))
+            {
+                return false;
+            }
+
+            _snapshot = _snapshot with
+            {
+                StopReason = CaptureStopReason.LimitReached,
+                FailureKind = CaptureFailureKind.EvidenceLimit,
+                Failure = failure,
+            };
+            return true;
+        }
+    }
+
+    private bool IsExpectedLimitStop(
+        ActiveSession session,
+        RawEvidenceLimitReachedException failure)
+    {
+        lock (_gate)
+        {
+            return ReferenceEquals(_session, session)
+                && _snapshot.StopReason == CaptureStopReason.LimitReached
+                && ReferenceEquals(_snapshot.Failure, failure);
         }
     }
 
@@ -924,6 +1006,11 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         if (exception is ArgumentException)
         {
             return CaptureFailureKind.Configuration;
+        }
+
+        if (exception is RawEvidenceLimitReachedException)
+        {
+            return CaptureFailureKind.EvidenceLimit;
         }
 
         return exception is IOException

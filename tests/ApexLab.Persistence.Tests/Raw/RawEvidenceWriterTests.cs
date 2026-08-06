@@ -134,18 +134,20 @@ public sealed class RawEvidenceWriterTests
             () => writer.WriteAsync(
                 Envelope(3, 999, [2]),
                 TestContext.CancellationToken).AsTask());
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        await AssertLimitAsync(
             () => writer.WriteAsync(
                 Envelope(3, 1_101, [2]),
-                TestContext.CancellationToken).AsTask());
+                TestContext.CancellationToken).AsTask(),
+            "Duration");
         await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(
             () => writer.WriteAsync(
                 Envelope(3, 1_050, new byte[11]),
                 TestContext.CancellationToken).AsTask());
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        await AssertLimitAsync(
             () => writer.WriteAsync(
                 Envelope(3, 1_050, new byte[10]),
-                TestContext.CancellationToken).AsTask());
+                TestContext.CancellationToken).AsTask(),
+            "FileSize");
 
         var completion = await writer.FinalizeAsync(
             TestContext.CancellationToken);
@@ -174,16 +176,20 @@ public sealed class RawEvidenceWriterTests
     public async Task FreeSpaceFloorIsEnforcedBeforeCreatingOrGrowingFiles()
     {
         using var temporary = TemporaryEvidenceRoot.Create();
-        await Assert.ThrowsExactlyAsync<IOException>(
-            () => RawEvidenceWriter.CreateForTestingAsync(
-                temporary.Paths,
-                CaptureId,
-                ProtocolId,
-                new RawEvidenceLimits(minimumFreeSpaceBytes: 100),
-                stopwatchFrequency: 1_000,
-                new QueueTimeProvider(CreatedAt),
-                () => 171,
-                TestContext.CancellationToken));
+        await AssertLimitAsync(
+            async () =>
+            {
+                await RawEvidenceWriter.CreateForTestingAsync(
+                    temporary.Paths,
+                    CaptureId,
+                    ProtocolId,
+                    new RawEvidenceLimits(minimumFreeSpaceBytes: 100),
+                    stopwatchFrequency: 1_000,
+                    new QueueTimeProvider(CreatedAt),
+                    () => 171,
+                    TestContext.CancellationToken);
+            },
+            "FreeSpace");
         AssertNoStagingFiles(temporary.Paths);
 
         long available = long.MaxValue;
@@ -191,17 +197,98 @@ public sealed class RawEvidenceWriterTests
             temporary.Paths,
             CaptureId,
             ProtocolId,
-            new RawEvidenceLimits(minimumFreeSpaceBytes: 100),
+            new RawEvidenceLimits(minimumFreeSpaceBytes: 10_000),
             stopwatchFrequency: 1_000,
             new QueueTimeProvider(CreatedAt, FinalizedAt),
             () => available,
             TestContext.CancellationToken);
-        available = 160;
+        available = 10_060;
 
-        await Assert.ThrowsExactlyAsync<IOException>(
+        await AssertLimitAsync(
             () => writer.WriteAsync(
                 Envelope(1, 1, [1]),
-                TestContext.CancellationToken).AsTask());
+                TestContext.CancellationToken).AsTask(),
+            "FreeSpace");
+    }
+
+    [TestMethod]
+    public async Task FileLimitLeavesPreviouslyStagedRecordsFinalizable()
+    {
+        using var temporary = TemporaryEvidenceRoot.Create();
+        await using var writer = await CreateWriterAsync(
+            temporary,
+            new RawEvidenceLimits(
+                maximumFileBytes: 197,
+                minimumFreeSpaceBytes: 0));
+        await writer.WriteAsync(
+            Envelope(1, 1, [1]),
+            TestContext.CancellationToken);
+
+        await AssertLimitAsync(
+            () => writer.WriteAsync(
+                Envelope(2, 2, [2]),
+                TestContext.CancellationToken).AsTask(),
+            "FileSize");
+        var completion = await writer.FinalizeAsync(
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(1L, completion.RecordCount);
+        Assert.IsTrue(File.Exists(temporary.DataPath(CaptureId)));
+        Assert.IsTrue(File.Exists(temporary.ManifestPath(CaptureId)));
+    }
+
+    [TestMethod]
+    public async Task DurationLimitLeavesPreviouslyStagedRecordsFinalizable()
+    {
+        using var temporary = TemporaryEvidenceRoot.Create();
+        await using var writer = await CreateWriterAsync(
+            temporary,
+            new RawEvidenceLimits(
+                maximumDuration: TimeSpan.FromMilliseconds(100),
+                minimumFreeSpaceBytes: 0));
+        await writer.WriteAsync(
+            Envelope(1, 1_000, [1]),
+            TestContext.CancellationToken);
+
+        await AssertLimitAsync(
+            () => writer.WriteAsync(
+                Envelope(2, 1_101, [2]),
+                TestContext.CancellationToken).AsTask(),
+            "Duration");
+        var completion = await writer.FinalizeAsync(
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(1L, completion.RecordCount);
+    }
+
+    [TestMethod]
+    public async Task FreeSpaceLimitLeavesPreviouslyStagedRecordsFinalizable()
+    {
+        using var temporary = TemporaryEvidenceRoot.Create();
+        long available = long.MaxValue;
+        await using var writer = await RawEvidenceWriter.CreateForTestingAsync(
+            temporary.Paths,
+            CaptureId,
+            ProtocolId,
+            new RawEvidenceLimits(minimumFreeSpaceBytes: 10_000),
+            stopwatchFrequency: 1_000,
+            new QueueTimeProvider(CreatedAt, FinalizedAt),
+            () => available,
+            TestContext.CancellationToken);
+        await writer.WriteAsync(
+            Envelope(1, 1, [1]),
+            TestContext.CancellationToken);
+        available = 10_060;
+
+        await AssertLimitAsync(
+            () => writer.WriteAsync(
+                Envelope(2, 2, [2]),
+                TestContext.CancellationToken).AsTask(),
+            "FreeSpace");
+        var completion = await writer.FinalizeAsync(
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(1L, completion.RecordCount);
     }
 
     [TestMethod]
@@ -296,6 +383,22 @@ public sealed class RawEvidenceWriterTests
         return CryptographicOperations.FixedTimeEquals(
             SHA256.HashData(combined),
             Convert.FromHexString(expectedDigest));
+    }
+
+    private static async Task AssertLimitAsync(
+        Func<Task> operation,
+        string expectedKind)
+    {
+        var exception = await Assert.ThrowsAsync<Exception>(operation);
+        Assert.AreEqual(
+            "RawEvidenceLimitReachedException",
+            exception.GetType().Name);
+        Assert.AreEqual(
+            expectedKind,
+            exception.GetType()
+                .GetProperty("Kind")?
+                .GetValue(exception)?
+                .ToString());
     }
 
     private static void AssertNoStagingFiles(ApplicationPaths paths)
