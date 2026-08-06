@@ -92,6 +92,10 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
     private bool _disposeRequested;
     private bool _bindingNotificationPending;
     private bool _interruptedNotificationPending;
+    private readonly Queue<CaptureWorkflowSnapshot>
+        _postBindingNotifications = new();
+    private readonly Queue<CaptureWorkflowSnapshot>
+        _postInterruptedNotifications = new();
     private long _generation;
 
     public CaptureWorkflow(
@@ -193,6 +197,13 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
                     new InvalidOperationException(
                         "Capture can be armed only while idle or stopped."));
             }
+            if (_bindingNotificationPending
+                || _interruptedNotificationPending)
+            {
+                return Task.FromException<CaptureWorkflowSnapshot>(
+                    new InvalidOperationException(
+                        "Capture notifications must settle before another arm."));
+            }
             if (!_deferredCleanupCompletion.IsCompleted)
             {
                 return Task.FromException<CaptureWorkflowSnapshot>(
@@ -242,11 +253,8 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         }
         finally
         {
-            lock (_gate)
-            {
-                _bindingNotificationPending = false;
-            }
             bindingPublished.TrySetResult();
+            FlushPostBindingNotifications();
         }
 
         return completion.Task;
@@ -924,14 +932,9 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         }
 
         ObserveFault(cleanup);
-        NotifySnapshotChanged(snapshot);
-        lock (_gate)
-        {
-            _interruptedNotificationPending = false;
-            Monitor.PulseAll(_gate);
-        }
-
         cleanupStart.TrySetResult();
+        NotifySnapshotChangedCore(snapshot);
+        FlushPostInterruptedNotifications();
         return snapshot;
     }
 
@@ -1195,7 +1198,6 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot snapshot;
         lock (_gate)
         {
-            WaitForInterruptedNotification();
             if (generation.HasValue
                 && generation.Value != _generation)
             {
@@ -1223,7 +1225,6 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         CaptureWorkflowSnapshot snapshot;
         lock (_gate)
         {
-            WaitForInterruptedNotification();
             if (generation.HasValue
                 && generation.Value != _generation)
             {
@@ -1313,15 +1314,69 @@ public sealed class CaptureWorkflow : ICaptureWorkflow
         return snapshot;
     }
 
-    private void WaitForInterruptedNotification()
+    private void FlushPostInterruptedNotifications()
     {
-        while (_interruptedNotificationPending)
+        while (true)
         {
-            Monitor.Wait(_gate);
+            CaptureWorkflowSnapshot pending;
+            lock (_gate)
+            {
+                if (_postInterruptedNotifications.Count == 0)
+                {
+                    _interruptedNotificationPending = false;
+                    return;
+                }
+
+                pending = _postInterruptedNotifications.Dequeue();
+            }
+
+            NotifySnapshotChangedCore(pending);
+        }
+    }
+
+    private void FlushPostBindingNotifications()
+    {
+        while (true)
+        {
+            CaptureWorkflowSnapshot pending;
+            lock (_gate)
+            {
+                if (_postBindingNotifications.Count == 0)
+                {
+                    _bindingNotificationPending = false;
+                    return;
+                }
+
+                pending = _postBindingNotifications.Dequeue();
+            }
+
+            NotifySnapshotChangedCore(pending);
         }
     }
 
     private void NotifySnapshotChanged(CaptureWorkflowSnapshot snapshot)
+    {
+        lock (_gate)
+        {
+            if (_bindingNotificationPending
+                && snapshot.State != CaptureState.Binding)
+            {
+                _postBindingNotifications.Enqueue(snapshot);
+                return;
+            }
+            if (_interruptedNotificationPending
+                && snapshot.State != CaptureState.Interrupted)
+            {
+                _postInterruptedNotifications.Enqueue(snapshot);
+                return;
+            }
+        }
+
+        NotifySnapshotChangedCore(snapshot);
+    }
+
+    private void NotifySnapshotChangedCore(
+        CaptureWorkflowSnapshot snapshot)
     {
         var handlers = SnapshotChanged;
         if (handlers is null)

@@ -98,6 +98,79 @@ public sealed class CaptureWorkflowTests
     }
 
     [TestMethod]
+    public async Task EverySubscriberObservesBindingBeforeReentrantStopTransitions()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.Binding)
+            {
+                _ = subject.StopAsync(
+                        CaptureStopReason.User,
+                        TestContext.CancellationToken)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+        };
+        var observed = new List<CaptureState>();
+        subject.SnapshotChanged += (_, snapshot) =>
+            observed.Add(snapshot.State);
+
+        var arm = subject.ArmAsync(TestContext.CancellationToken);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => arm);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                CaptureState.Binding,
+                CaptureState.Stopping,
+                CaptureState.Stopped,
+            },
+            observed);
+    }
+
+    [TestMethod]
+    public async Task QueuedStoppedSubscriberCannotPreventArmOwnershipFromCompleting()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromSeconds(2));
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.Binding)
+            {
+                _ = subject.StopAsync(
+                        CaptureStopReason.User,
+                        TestContext.CancellationToken)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+        };
+        var ownershipCompletedInsideSubscriber = false;
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.Stopped)
+            {
+                ownershipCompletedInsideSubscriber =
+                    subject.DeferredCleanupCompletion.Wait(
+                        TimeSpan.FromMilliseconds(500));
+            }
+        };
+
+        var arm = subject.ArmAsync(TestContext.CancellationToken);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => arm);
+        Assert.IsTrue(ownershipCompletedInsideSubscriber);
+        Assert.AreEqual(0, factory.CreateCalls);
+    }
+
+    [TestMethod]
     public async Task StopDuringCancellationInsensitiveBindingRetainsOwnershipUntilCreationResolves()
     {
         var factory = new ControlledSessionFactory
@@ -246,6 +319,71 @@ public sealed class CaptureWorkflowTests
                 // Every disposer observes the same terminal cleanup failure.
             }
         }
+    }
+
+    [TestMethod]
+    public async Task InterruptedSubscriberCannotPreventDeferredCleanupFromStarting()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Evidence.BlockFinalizationUntilReleased();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromMilliseconds(50));
+        var cleanupCompletedInsideSubscriber = false;
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.Interrupted)
+            {
+                factory.Evidence.ReleaseFinalization();
+                cleanupCompletedInsideSubscriber =
+                    subject.DeferredCleanupCompletion.Wait(
+                        TimeSpan.FromMilliseconds(500));
+            }
+        };
+        await subject.ArmAsync(TestContext.CancellationToken);
+
+        var interrupted = await subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(CaptureState.Interrupted, interrupted.State);
+        Assert.IsTrue(cleanupCompletedInsideSubscriber);
+        await subject.DeferredCleanupCompletion.WaitAsync(
+            TestContext.CancellationToken);
+        Assert.AreEqual(CaptureState.Stopped, subject.Snapshot.State);
+    }
+
+    [TestMethod]
+    public async Task InterruptedSubscriberCannotRearmBeforeTerminalNotificationFlushes()
+    {
+        var factory = new ControlledSessionFactory();
+        factory.CompleteCreation();
+        factory.Evidence.BlockFinalizationUntilReleased();
+        await using var subject = new CaptureWorkflow(
+            factory,
+            TimeSpan.FromMilliseconds(50));
+        Task<CaptureWorkflowSnapshot>? rearm = null;
+        subject.SnapshotChanged += (_, snapshot) =>
+        {
+            if (snapshot.State == CaptureState.Interrupted)
+            {
+                factory.Evidence.ReleaseFinalization();
+                subject.DeferredCleanupCompletion.GetAwaiter().GetResult();
+                rearm = subject.ArmAsync(TestContext.CancellationToken);
+            }
+        };
+        await subject.ArmAsync(TestContext.CancellationToken);
+
+        var interrupted = await subject.StopAsync(
+            CaptureStopReason.User,
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(CaptureState.Interrupted, interrupted.State);
+        Assert.IsNotNull(rearm);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => rearm!);
+        Assert.AreEqual(CaptureState.Stopped, subject.Snapshot.State);
     }
 
     [TestMethod]
