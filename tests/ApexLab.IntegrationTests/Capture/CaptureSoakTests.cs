@@ -21,14 +21,15 @@ public sealed class CaptureSoakTests
         var targetRate = ReadOptionalInt(
             "APEXLAB_SOAK_TARGET_DATAGRAMS_PER_SECOND",
             maximum: 100_000);
-        var minimumObservedRate = ReadOptionalInt(
-            "APEXLAB_SOAK_MINIMUM_OBSERVED_DATAGRAMS_PER_SECOND",
-            maximum: 100_000);
+        var measuredRealPeakRate = ReadOptionalInt(
+            "APEXLAB_SOAK_MEASURED_REAL_PEAK_DATAGRAMS_PER_SECOND",
+            maximum: 50_000);
+        var minimumObservedRate = checked(2 * measuredRealPeakRate);
         var minimumObservedFractionPermille = ReadOptionalInt(
             "APEXLAB_SOAK_MINIMUM_OBSERVED_FRACTION_PERMILLE",
             maximum: 1_000,
             defaultValue: 950,
-            minimum: 900);
+            minimum: 950);
         if (targetRate == 0 && minimumObservedRate != 0)
         {
             throw new InvalidOperationException(
@@ -38,6 +39,21 @@ public sealed class CaptureSoakTests
         {
             throw new InvalidOperationException(
                 "The minimum observed rate cannot exceed the target rate.");
+        }
+        if (minimumObservedRate > 0)
+        {
+            var minimumTargetRate = checked(
+                (minimumObservedRate * 11L + 9L) / 10L);
+            if (targetRate < minimumTargetRate)
+            {
+                throw new InvalidOperationException(
+                    "The rate gate target must be at least 110% of its minimum observed rate.");
+            }
+            if (requested < targetRate * 60L)
+            {
+                throw new InvalidOperationException(
+                    "The rate gate must run for at least 60 seconds at its target rate.");
+            }
         }
         TestContext.WriteLine($"capture-soak-seed={SoakSeed}");
         TestContext.WriteLine($"capture-soak-requested={requested}");

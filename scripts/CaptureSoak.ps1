@@ -6,10 +6,10 @@ param(
     [ValidateRange(0, 100000)]
     [int] $TargetDatagramsPerSecond = 0,
 
-    [ValidateRange(0, 100000)]
-    [int] $MinimumObservedDatagramsPerSecond = 0,
+    [ValidateRange(0, 50000)]
+    [int] $MeasuredRealPeakDatagramsPerSecond = 0,
 
-    [ValidateRange(900, 1000)]
+    [ValidateRange(950, 1000)]
     [int] $MinimumObservedFractionPermille = 950,
 
     [ValidateSet("Debug", "Release")]
@@ -26,16 +26,22 @@ $resultsDirectory = Join-Path $repositoryRoot "artifacts/test-results/capture-so
 $summaryPath = Join-Path $resultsDirectory "capture-soak-summary.json"
 $priorDatagramCount = $env:APEXLAB_SOAK_DATAGRAMS
 $priorTargetRate = $env:APEXLAB_SOAK_TARGET_DATAGRAMS_PER_SECOND
-$priorMinimumRate = $env:APEXLAB_SOAK_MINIMUM_OBSERVED_DATAGRAMS_PER_SECOND
+$priorMeasuredRealPeakRate = `
+    $env:APEXLAB_SOAK_MEASURED_REAL_PEAK_DATAGRAMS_PER_SECOND
 $priorMinimumFraction = $env:APEXLAB_SOAK_MINIMUM_OBSERVED_FRACTION_PERMILLE
 $priorSummaryPath = $env:APEXLAB_SOAK_SUMMARY_PATH
+$minimumObservedRate = 2 * $MeasuredRealPeakDatagramsPerSecond
 
-if ($TargetDatagramsPerSecond -eq 0 `
-    -and $MinimumObservedDatagramsPerSecond -ne 0) {
-    throw "A minimum observed rate requires a non-zero target rate."
-}
-if ($MinimumObservedDatagramsPerSecond -gt $TargetDatagramsPerSecond) {
-    throw "The minimum observed rate cannot exceed the configured target rate."
+if ($MeasuredRealPeakDatagramsPerSecond -gt 0) {
+    $minimumTargetRate = [int][Math]::Ceiling(
+        ([decimal]$minimumObservedRate * 11) / 10)
+    if ($TargetDatagramsPerSecond -lt $minimumTargetRate) {
+        throw "The rate gate target must be at least 110% of its derived 2x minimum."
+    }
+    $minimumDatagramCount = 60L * $TargetDatagramsPerSecond
+    if ($DatagramCount -lt $minimumDatagramCount) {
+        throw "The rate gate must run for at least 60 seconds at its target rate."
+    }
 }
 
 try {
@@ -43,8 +49,8 @@ try {
         $DatagramCount.ToString([Globalization.CultureInfo]::InvariantCulture)
     $env:APEXLAB_SOAK_TARGET_DATAGRAMS_PER_SECOND = `
         $TargetDatagramsPerSecond.ToString([Globalization.CultureInfo]::InvariantCulture)
-    $env:APEXLAB_SOAK_MINIMUM_OBSERVED_DATAGRAMS_PER_SECOND = `
-        $MinimumObservedDatagramsPerSecond.ToString(
+    $env:APEXLAB_SOAK_MEASURED_REAL_PEAK_DATAGRAMS_PER_SECOND = `
+        $MeasuredRealPeakDatagramsPerSecond.ToString(
             [Globalization.CultureInfo]::InvariantCulture)
     $env:APEXLAB_SOAK_MINIMUM_OBSERVED_FRACTION_PERMILLE = `
         $MinimumObservedFractionPermille.ToString(
@@ -81,7 +87,8 @@ try {
 finally {
     $env:APEXLAB_SOAK_DATAGRAMS = $priorDatagramCount
     $env:APEXLAB_SOAK_TARGET_DATAGRAMS_PER_SECOND = $priorTargetRate
-    $env:APEXLAB_SOAK_MINIMUM_OBSERVED_DATAGRAMS_PER_SECOND = $priorMinimumRate
+    $env:APEXLAB_SOAK_MEASURED_REAL_PEAK_DATAGRAMS_PER_SECOND = `
+        $priorMeasuredRealPeakRate
     $env:APEXLAB_SOAK_MINIMUM_OBSERVED_FRACTION_PERMILLE = $priorMinimumFraction
     $env:APEXLAB_SOAK_SUMMARY_PATH = $priorSummaryPath
 }
