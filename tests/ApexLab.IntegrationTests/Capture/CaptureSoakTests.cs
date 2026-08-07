@@ -23,7 +23,7 @@ public sealed class CaptureSoakTests
             maximum: 100_000);
         var measuredRealPeakRate = ReadOptionalInt(
             "APEXLAB_SOAK_MEASURED_REAL_PEAK_DATAGRAMS_PER_SECOND",
-            maximum: 50_000);
+            maximum: 37_878);
         var minimumObservedRate = checked(2 * measuredRealPeakRate);
         var minimumObservedFractionPermille = ReadOptionalInt(
             "APEXLAB_SOAK_MINIMUM_OBSERVED_FRACTION_PERMILLE",

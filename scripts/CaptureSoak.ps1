@@ -6,7 +6,7 @@ param(
     [ValidateRange(0, 100000)]
     [int] $TargetDatagramsPerSecond = 0,
 
-    [ValidateRange(0, 50000)]
+    [ValidateRange(0, 37878)]
     [int] $MeasuredRealPeakDatagramsPerSecond = 0,
 
     [ValidateRange(950, 1000)]
