@@ -1,7 +1,7 @@
 # Private F1 25 Validation Assistant Design
 
-**Date:** 2026-08-07  
-**Status:** Approved for implementation planning  
+**Date:** 2026-08-07
+**Status:** Approved for implementation planning
 **Milestone:** ApexLab v0.2.0 private evidence gate
 
 ## Purpose

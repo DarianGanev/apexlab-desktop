@@ -178,8 +178,16 @@ function Assert-PrivateValidationVerificationRecord {
         -or $record.validationDate -notmatch '^\d{4}-\d{2}-\d{2}$' `
         -or $record.conclusion -cne 'PASS' `
         -or [string]::IsNullOrWhiteSpace($record.gameBuild) `
+        -or $record.gameBuild.Trim() -cne $record.gameBuild `
+        -or $record.gameBuild.Contains([IO.Path]::DirectorySeparatorChar) `
+        -or $record.gameBuild.Contains([IO.Path]::AltDirectorySeparatorChar) `
         -or $record.gameBuild.Length -gt 80) {
         throw "Private validation record is invalid."
+    }
+    foreach ($character in $record.gameBuild.ToCharArray()) {
+        if ([char]::IsControl($character)) {
+            throw "Private validation record is invalid."
+        }
     }
     $parsedDate = [datetime]::MinValue
     if (![datetime]::TryParseExact(

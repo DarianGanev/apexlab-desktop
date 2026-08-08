@@ -209,28 +209,47 @@ public sealed class PrivateF125PowerShellTests
         var childPath = Path.Combine(temporary, "child.ps1");
         var stdoutPath = Path.Combine(temporary, "stdout.txt");
         var stderrPath = Path.Combine(temporary, "stderr.txt");
-        const string argument = "value;$(Set-Content should-not-exist.txt bad)";
+        string[] arguments =
+        [
+            string.Empty,
+            "white space",
+            "apostrophe's",
+            "semi;colon",
+            "value;$(Set-Content should-not-exist.txt bad)",
+            "quote\"value",
+            "trailing\\",
+            "slashes\\\\\"quote",
+        ];
         await File.WriteAllTextAsync(
             childPath,
-            "param([string] $Value)\n"
-            + "[Console]::Out.WriteLine('OUT:' + $Value)\n"
+            "[Console]::Out.WriteLine(([pscustomobject]@{Values=@($args)} | "
+            + "ConvertTo-Json -Compress))\n"
             + "[Console]::Error.WriteLine('PRIVATE-CHILD-SENTINEL')\n"
             + "exit 7\n");
         try
         {
+            var environment = new Dictionary<string, string>
+            {
+                ["APEXLAB_CHILD"] = childPath,
+                ["APEXLAB_STDOUT"] = stdoutPath,
+                ["APEXLAB_STDERR"] = stderrPath,
+            };
+            for (var index = 0; index < arguments.Length; index++)
+            {
+                environment[$"APEXLAB_ARGUMENT_{index}"] = arguments[index];
+            }
+            var childArguments = string.Join(
+                ',',
+                Enumerable.Range(0, arguments.Length)
+                    .Select(index => $"$env:APEXLAB_ARGUMENT_{index}"));
             using var result = await InvokeModuleAsync(
                 "$result = Invoke-ApexLabCapturedProcess -FilePath 'powershell.exe' "
-                + "-ArgumentList @('-NoProfile','-File',$env:APEXLAB_CHILD,$env:APEXLAB_ARGUMENT) "
+                + "-ArgumentList @('-NoProfile','-File',$env:APEXLAB_CHILD,"
+                + childArguments + ") "
                 + "-StandardOutputPath $env:APEXLAB_STDOUT -StandardErrorPath $env:APEXLAB_STDERR; "
                 + "[pscustomobject]@{ExitCode=$result.ExitCode;Out=[IO.File]::ReadAllText($env:APEXLAB_STDOUT);"
                 + "Err=[IO.File]::ReadAllText($env:APEXLAB_STDERR)} | ConvertTo-Json -Compress",
-                new Dictionary<string, string>
-                {
-                    ["APEXLAB_CHILD"] = childPath,
-                    ["APEXLAB_ARGUMENT"] = argument,
-                    ["APEXLAB_STDOUT"] = stdoutPath,
-                    ["APEXLAB_STDERR"] = stderrPath,
-                });
+                environment);
 
             Assert.AreEqual(0, result.ExitCode, result.StandardError);
             using var document = JsonDocument.Parse(result.StandardOutput);
@@ -241,10 +260,20 @@ public sealed class PrivateF125PowerShellTests
                 JsonValueKind.String,
                 document.RootElement.GetProperty("Out").ValueKind,
                 result.StandardOutput);
+            var childOutput = document.RootElement.GetProperty("Out").GetString();
+            Assert.IsNotNull(childOutput);
+            using var childDocument = JsonDocument.Parse(childOutput);
             Assert.AreEqual(
-                $"OUT:{argument}\r\n",
-                document.RootElement.GetProperty("Out").GetString(),
-                result.StandardOutput);
+                JsonValueKind.Object,
+                childDocument.RootElement.ValueKind,
+                childOutput);
+            CollectionAssert.AreEqual(
+                arguments,
+                childDocument.RootElement.GetProperty("Values")
+                    .EnumerateArray()
+                    .Select(value => value.GetString())
+                    .ToArray(),
+                childOutput);
             Assert.AreEqual(
                 "PRIVATE-CHILD-SENTINEL\r\n",
                 document.RootElement.GetProperty("Err").GetString());
@@ -255,6 +284,131 @@ public sealed class PrivateF125PowerShellTests
         finally
         {
             Directory.Delete(temporary, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task TerminatesAnOwnedChildWhenItsBoundedWaitExpires()
+    {
+        var temporary = Path.Combine(
+            Path.GetTempPath(),
+            $"apexlab-process-timeout-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporary);
+        var childPath = Path.Combine(temporary, "child.ps1");
+        var pidPath = Path.Combine(temporary, "pid.txt");
+        var stdoutPath = Path.Combine(temporary, "stdout.txt");
+        var stderrPath = Path.Combine(temporary, "stderr.txt");
+        await File.WriteAllTextAsync(
+            childPath,
+            "[IO.File]::WriteAllText($env:APEXLAB_CHILD_PID,[string]$PID)\n"
+            + "Start-Sleep -Seconds 30\n");
+        try
+        {
+            using var result = await InvokeModuleAsync(
+                "Invoke-ApexLabCapturedProcess -FilePath $PSHOME\\powershell.exe "
+                + "-ArgumentList @('-NoProfile','-File',$env:APEXLAB_CHILD) "
+                + "-StandardOutputPath $env:APEXLAB_STDOUT "
+                + "-StandardErrorPath $env:APEXLAB_STDERR -TimeoutSeconds 1",
+                new Dictionary<string, string>
+                {
+                    ["APEXLAB_CHILD"] = childPath,
+                    ["APEXLAB_CHILD_PID"] = pidPath,
+                    ["APEXLAB_STDOUT"] = stdoutPath,
+                    ["APEXLAB_STDERR"] = stderrPath,
+                });
+
+            Assert.AreNotEqual(0, result.ExitCode);
+            Assert.IsTrue(File.Exists(pidPath));
+            var pid = int.Parse(await File.ReadAllTextAsync(pidPath));
+            Assert.IsFalse(IsProcessRunning(pid));
+        }
+        finally
+        {
+            if (File.Exists(pidPath))
+            {
+                var pid = int.Parse(await File.ReadAllTextAsync(pidPath));
+                try
+                {
+                    Process.GetProcessById(pid).Kill(entireProcessTree: true);
+                }
+                catch (ArgumentException)
+                {
+                }
+            }
+            Directory.Delete(temporary, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task RefusesToRecursivelyDeleteARunTreeContainingAReparsePoint()
+    {
+        var temporary = Path.Combine(
+            Path.GetTempPath(),
+            $"apexlab-cleanup-reparse-{Guid.NewGuid():N}");
+        var privateRoot = Path.Combine(temporary, "private-validation");
+        var runRoot = Path.Combine(
+            privateRoot,
+            $"run-{Guid.NewGuid():N}");
+        var target = Path.Combine(temporary, "must-survive");
+        var junction = Path.Combine(runRoot, "unsafe-junction");
+        Directory.CreateDirectory(runRoot);
+        Directory.CreateDirectory(target);
+        await File.WriteAllTextAsync(Path.Combine(target, "evidence.txt"), "keep");
+        try
+        {
+            using var result = await InvokeModuleAsync(
+                "$junction=New-Item -ItemType Junction "
+                + "-Path $env:APEXLAB_JUNCTION -Target $env:APEXLAB_TARGET; "
+                + "$module=Get-Module PrivateF125Validation; & $module { "
+                + "param($run,$private) Remove-ApexLabPrivateRunRoot "
+                + "-RunRoot $run -PrivateRoot $private } "
+                + "$env:APEXLAB_RUN $env:APEXLAB_PRIVATE",
+                new Dictionary<string, string>
+                {
+                    ["APEXLAB_JUNCTION"] = junction,
+                    ["APEXLAB_TARGET"] = target,
+                    ["APEXLAB_RUN"] = runRoot,
+                    ["APEXLAB_PRIVATE"] = privateRoot,
+                });
+
+            Assert.AreNotEqual(0, result.ExitCode);
+            Assert.IsTrue(File.Exists(Path.Combine(target, "evidence.txt")));
+            Assert.IsTrue(Directory.Exists(runRoot));
+        }
+        finally
+        {
+            if (Directory.Exists(junction))
+            {
+                Directory.Delete(junction);
+            }
+            Directory.Delete(temporary, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ResolvesProductionToolsToAbsolutePathsOutsideTheRepository()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        using var result = await InvokeModuleAsync(
+            "$module=Get-Module PrivateF125Validation; $value=& $module { "
+            + "param($repo) Get-ApexLabTrustedExecutablePaths "
+            + "-RepositoryRoot $repo } $env:APEXLAB_REPOSITORY; "
+            + "$value | ConvertTo-Json -Compress",
+            new Dictionary<string, string>
+            {
+                ["APEXLAB_REPOSITORY"] = repositoryRoot,
+            });
+
+        Assert.AreEqual(0, result.ExitCode, result.StandardError);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            var path = property.Value.GetString();
+            Assert.IsNotNull(path);
+            Assert.IsTrue(Path.IsPathFullyQualified(path));
+            Assert.IsFalse(path.StartsWith(
+                repositoryRoot + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase));
         }
     }
 
@@ -303,6 +457,18 @@ public sealed class PrivateF125PowerShellTests
                 acceptedJson.Insert(
                     acceptedJson.LastIndexOf('}'),
                     ",\"privateUnexpected\":1"),
+                acceptedJson.Replace(
+                    "\"playerMinimum\": 3",
+                    "\"playerMinimum\": 300",
+                    StringComparison.Ordinal),
+                acceptedJson.Replace(
+                    "\"playerMinimum\": 3",
+                    "\"playerMinimum\": 4",
+                    StringComparison.Ordinal),
+                acceptedJson.Replace(
+                    "\"secondaryMinimum\": null",
+                    "\"secondaryMinimum\": 1",
+                    StringComparison.Ordinal),
             ];
             for (var index = 0; index < rejectedJson.Length; index++)
             {
@@ -587,6 +753,10 @@ public sealed class PrivateF125PowerShellTests
                 dataRoot,
                 "private-validation",
                 "latest-safe.json")));
+            Assert.IsFalse(Directory.EnumerateFiles(
+                Path.Combine(dataRoot, "private-validation"),
+                "safe-*.*",
+                SearchOption.TopDirectoryOnly).Any());
             var soakArguments = await File.ReadAllTextAsync(Path.Combine(
                 diagnosticsRoot,
                 "soak-arguments.json"));
@@ -664,6 +834,19 @@ public sealed class PrivateF125PowerShellTests
         finally
         {
             File.Delete(scriptPath);
+        }
+    }
+
+    private static bool IsProcessRunning(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return !process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return false;
         }
     }
 

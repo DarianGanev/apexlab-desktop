@@ -283,6 +283,8 @@ function Invoke-ApexLabProductionPreflight {
     if (![IO.Directory]::Exists($repositoryRoot)) {
         throw "The repository root is unavailable."
     }
+    $tools = Get-ApexLabTrustedExecutablePaths `
+        -RepositoryRoot $repositoryRoot
 
     $dataRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'ApexLab'))
     $privateRoot = [IO.Path]::GetFullPath((
@@ -297,7 +299,7 @@ function Invoke-ApexLabProductionPreflight {
         Assert-ApexLabNoReparsePath -Anchor $privateRoot -Target $runRoot
         $head = Invoke-ApexLabPrivateTextCommand `
             -RunRoot $runRoot `
-            -FilePath 'git.exe' `
+            -FilePath $tools.GitPath `
             -Arguments @('-C', $repositoryRoot, 'rev-parse', '--verify', 'HEAD')
         $head = $head.Trim()
         if ($head -notmatch '^[0-9a-f]{40}$') {
@@ -305,13 +307,13 @@ function Invoke-ApexLabProductionPreflight {
         }
         [void](Invoke-ApexLabPrivateTextCommand `
             -RunRoot $runRoot `
-            -FilePath 'git.exe' `
+            -FilePath $tools.GitPath `
             -Arguments @(
                 '-C', $repositoryRoot, 'symbolic-ref', '--quiet', '--short',
                 'HEAD'))
         $status = Invoke-ApexLabPrivateTextCommand `
             -RunRoot $runRoot `
-            -FilePath 'git.exe' `
+            -FilePath $tools.GitPath `
             -Arguments @(
                 '-C', $repositoryRoot, 'status', '--porcelain=v1',
                 '--untracked-files=no')
@@ -320,7 +322,7 @@ function Invoke-ApexLabProductionPreflight {
         }
         $sdk = (Invoke-ApexLabPrivateTextCommand `
             -RunRoot $runRoot `
-            -FilePath 'dotnet.exe' `
+            -FilePath $tools.DotNetPath `
             -Arguments @('--version')).Trim()
         if ($sdk -cne '10.0.302') {
             throw "The required .NET SDK is unavailable."
@@ -332,7 +334,7 @@ function Invoke-ApexLabProductionPreflight {
 
         [void](Invoke-ApexLabPrivateTextCommand `
             -RunRoot $runRoot `
-            -FilePath 'powershell.exe' `
+            -FilePath $tools.PowerShellPath `
             -Arguments @(
                 '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
                 (Join-Path $repositoryRoot 'scripts/Verify.ps1')))
@@ -346,6 +348,9 @@ function Invoke-ApexLabProductionPreflight {
                 throw "A required Release validation file is unavailable."
             }
         }
+        $applicationHash = Get-ApexLabFileSha256 -Path $applicationPath
+        $replayHash = Get-ApexLabFileSha256 -Path $replayPath
+        $soakHash = Get-ApexLabFileSha256 -Path $soakPath
         $versionText = [IO.File]::ReadAllText((
             Join-Path $repositoryRoot 'Version.props'))
         $versionMatch = [regex]::Match(
@@ -366,6 +371,13 @@ function Invoke-ApexLabProductionPreflight {
             ReplayPath = $replayPath
             SoakPath = $soakPath
             ApplicationVersion = $versionMatch.Groups[1].Value
+            ApplicationHash = $applicationHash
+            ReplayHash = $replayHash
+            SoakHash = $soakHash
+            GitPath = $tools.GitPath
+            DotNetPath = $tools.DotNetPath
+            PowerShellPath = $tools.PowerShellPath
+            RequireCleanWorktree = $true
         }
     }
     catch {
@@ -376,9 +388,36 @@ function Invoke-ApexLabProductionPreflight {
     }
 }
 
+function Get-ApexLabTrustedExecutablePaths {
+    param([Parameter(Mandatory)] [string] $RepositoryRoot)
+
+    $programFiles = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::ProgramFiles)
+    $paths = [ordered]@{
+        GitPath = Join-Path $programFiles 'Git/cmd/git.exe'
+        DotNetPath = Join-Path $programFiles 'dotnet/dotnet.exe'
+        PowerShellPath = Join-Path $PSHOME 'powershell.exe'
+    }
+    $repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\')
+    foreach ($name in @($paths.Keys)) {
+        $path = [IO.Path]::GetFullPath($paths[$name])
+        if (![IO.File]::Exists($path) `
+            -or $path.StartsWith(
+                "$repositoryRoot\",
+                [StringComparison]::OrdinalIgnoreCase)) {
+            throw "A trusted validation executable is unavailable."
+        }
+        $paths[$name] = $path
+    }
+    return [pscustomobject]$paths
+}
+
 function Invoke-ApexLabProductionProbe {
     param([Parameter(Mandatory)] $Context)
 
+    Assert-ApexLabFileSha256 `
+        -Path $Context.ReplayPath `
+        -Expected $Context.ReplayHash
     [Console]::Out.WriteLine(
         'Configure F1 25 UDP v3 at 127.0.0.1:20777 and drive offline Time Trial for 30 seconds.')
     $probePath = Join-Path $Context.RunRoot 'probe.json'
@@ -387,7 +426,8 @@ function Invoke-ApexLabProductionProbe {
         -FilePath $Context.ReplayPath `
         -ArgumentList @('probe', '--duration-seconds', '30') `
         -StandardOutputPath $probePath `
-        -StandardErrorPath $errorPath
+        -StandardErrorPath $errorPath `
+        -TimeoutSeconds 45
     if ($result.ExitCode -ne 0) {
         throw "The private probe failed."
     }
@@ -397,6 +437,9 @@ function Invoke-ApexLabProductionProbe {
 function Invoke-ApexLabProductionCapture {
     param([Parameter(Mandatory)] $Context)
 
+    Assert-ApexLabFileSha256 `
+        -Path $Context.ApplicationPath `
+        -Expected $Context.ApplicationHash
     $before = Get-ApexLabFinalManifestLeafNames `
         -CapturesRoot $Context.CapturesRoot
     [Console]::Out.WriteLine(
@@ -432,6 +475,9 @@ function Invoke-ApexLabProductionPrivateValidation {
         [Parameter(Mandatory)] [string] $ProbePath
     )
 
+    Assert-ApexLabFileSha256 `
+        -Path $Context.ReplayPath `
+        -Expected $Context.ReplayHash
     $outputPath = Join-Path $Context.RunRoot 'validator.json'
     $errorPath = Join-Path $Context.RunRoot 'validator.stderr'
     $result = Invoke-ApexLabCapturedProcess `
@@ -440,7 +486,8 @@ function Invoke-ApexLabProductionPrivateValidation {
             'validate', '--data-root', $Context.DataRoot,
             '--capture-id', $CaptureId, '--probe-report', $ProbePath) `
         -StandardOutputPath $outputPath `
-        -StandardErrorPath $errorPath
+        -StandardErrorPath $errorPath `
+        -TimeoutSeconds 300
     if ($result.ExitCode -ne 0) {
         $exception = [InvalidOperationException]::new(
             "The private evidence validator failed.")
@@ -456,10 +503,13 @@ function Invoke-ApexLabProductionRateGate {
         [Parameter(Mandatory)] $RatePlan
     )
 
+    Assert-ApexLabFileSha256 `
+        -Path $Context.SoakPath `
+        -Expected $Context.SoakHash
     $outputPath = Join-Path $Context.RunRoot 'rate-gate.stdout'
     $errorPath = Join-Path $Context.RunRoot 'rate-gate.stderr'
     $result = Invoke-ApexLabCapturedProcess `
-        -FilePath 'powershell.exe' `
+        -FilePath $Context.PowerShellPath `
         -ArgumentList @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
             $Context.SoakPath,
@@ -470,7 +520,8 @@ function Invoke-ApexLabProductionRateGate {
             '-MinimumObservedFractionPermille', '950',
             '-Configuration', 'Release') `
         -StandardOutputPath $outputPath `
-        -StandardErrorPath $errorPath
+        -StandardErrorPath $errorPath `
+        -TimeoutSeconds 600
     if ($result.ExitCode -ne 0) {
         throw "The measured private rate gate failed."
     }
@@ -485,11 +536,22 @@ function Write-ApexLabProductionSafeSummary {
 
     $head = (Invoke-ApexLabPrivateTextCommand `
         -RunRoot $Context.RunRoot `
-        -FilePath 'git.exe' `
+        -FilePath $Context.GitPath `
         -Arguments @(
             '-C', $Context.RepositoryRoot, 'rev-parse', '--verify', 'HEAD')).Trim()
     if ($head -cne $Context.RepositoryHead) {
         throw "The repository changed during private validation."
+    }
+    if ($Context.RequireCleanWorktree) {
+        $status = Invoke-ApexLabPrivateTextCommand `
+            -RunRoot $Context.RunRoot `
+            -FilePath $Context.GitPath `
+            -Arguments @(
+                '-C', $Context.RepositoryRoot, 'status', '--porcelain=v1',
+                '--untracked-files=no')
+        if (![string]::IsNullOrWhiteSpace($status)) {
+            throw "The tracked worktree changed during private validation."
+        }
     }
     $summary = New-ApexLabSafeSummary `
         -GameBuild $GameBuild `
@@ -500,6 +562,8 @@ function Write-ApexLabProductionSafeSummary {
     $json = $summary | ConvertTo-Json -Compress
     $temporaryPath = Join-Path $Context.PrivateRoot (
         "safe-{0}.tmp" -f [guid]::NewGuid().ToString('N'))
+    $backupPath = Join-Path $Context.PrivateRoot (
+        "safe-{0}.bak" -f [guid]::NewGuid().ToString('N'))
     $latestPath = Join-Path $Context.PrivateRoot 'latest-safe.json'
     [IO.File]::WriteAllText(
         $temporaryPath,
@@ -507,7 +571,7 @@ function Write-ApexLabProductionSafeSummary {
         [Text.UTF8Encoding]::new($false))
     try {
         if ([IO.File]::Exists($latestPath)) {
-            [IO.File]::Replace($temporaryPath, $latestPath, $null)
+            [IO.File]::Replace($temporaryPath, $latestPath, $backupPath)
         }
         else {
             [IO.File]::Move($temporaryPath, $latestPath)
@@ -516,6 +580,9 @@ function Write-ApexLabProductionSafeSummary {
     finally {
         if ([IO.File]::Exists($temporaryPath)) {
             [IO.File]::Delete($temporaryPath)
+        }
+        if ([IO.File]::Exists($backupPath)) {
+            [IO.File]::Delete($backupPath)
         }
     }
     return $summary
@@ -540,6 +607,37 @@ function Invoke-ApexLabPrivateTextCommand {
         throw "A private validation child process failed."
     }
     return [IO.File]::ReadAllText($outputPath)
+}
+
+function Get-ApexLabFileSha256 {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $stream = [IO.File]::Open(
+        $Path,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString(
+            $algorithm.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $algorithm.Dispose()
+        $stream.Dispose()
+    }
+}
+
+function Assert-ApexLabFileSha256 {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Expected
+    )
+
+    if ($Expected -notmatch '^[0-9a-f]{64}$' `
+        -or (Get-ApexLabFileSha256 -Path $Path) -cne $Expected) {
+        throw "A verified validation file changed after preflight."
+    }
 }
 
 function Get-ApexLabFinalManifestLeafNames {
@@ -608,7 +706,27 @@ function Remove-ApexLabPrivateRunRoot {
     }
     if ([IO.Directory]::Exists($runRoot)) {
         Assert-ApexLabNoReparsePath -Anchor $privateRoot -Target $runRoot
+        Assert-ApexLabRunTreeContainsNoReparsePoint -RunRoot $runRoot
         Remove-Item -LiteralPath $runRoot -Recurse -Force
+    }
+}
+
+function Assert-ApexLabRunTreeContainsNoReparsePoint {
+    param([Parameter(Mandatory)] [string] $RunRoot)
+
+    $pending = [Collections.Generic.Stack[string]]::new()
+    $pending.Push($RunRoot)
+    while ($pending.Count -ne 0) {
+        $directory = $pending.Pop()
+        foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($directory)) {
+            $attributes = [IO.File]::GetAttributes($entry)
+            if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "The private validation run tree contains a reparse point."
+            }
+            if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+                $pending.Push($entry)
+            }
+        }
     }
 }
 
@@ -788,13 +906,17 @@ function Invoke-ApexLabCapturedProcess {
 
         [Parameter(Mandatory)]
         [AllowEmptyCollection()]
+        [AllowEmptyString()]
         [string[]] $ArgumentList,
 
         [Parameter(Mandatory)]
         [string] $StandardOutputPath,
 
         [Parameter(Mandatory)]
-        [string] $StandardErrorPath
+        [string] $StandardErrorPath,
+
+        [ValidateRange(1, 3600)]
+        [int] $TimeoutSeconds = 900
     )
 
     if ([string]::IsNullOrWhiteSpace($FilePath) `
@@ -813,6 +935,9 @@ function Invoke-ApexLabCapturedProcess {
         throw "The captured process output targets are invalid."
     }
 
+    # PowerShell 5.1 turns redirected native stderr into ErrorRecord text when
+    # ErrorActionPreference is Stop. ProcessStartInfo preserves raw streams;
+    # this quoting implements the documented Windows CreateProcess rules.
     $commandLine = (($ArgumentList | ForEach-Object {
         ConvertTo-ApexLabWindowsCommandLineArgument -Value $_
     }) -join ' ')
@@ -827,6 +952,9 @@ function Invoke-ApexLabCapturedProcess {
     $process.StartInfo = $startInfo
     $outputStream = $null
     $errorStream = $null
+    $outputCopy = $null
+    $errorCopy = $null
+    $started = $false
     try {
         $outputStream = [IO.File]::Open(
             $resolvedOutput,
@@ -841,17 +969,38 @@ function Invoke-ApexLabCapturedProcess {
         if (!$process.Start()) {
             throw "The captured process could not be started."
         }
+        $started = $true
 
         $outputCopy = $process.StandardOutput.BaseStream.CopyToAsync(
             $outputStream)
         $errorCopy = $process.StandardError.BaseStream.CopyToAsync(
             $errorStream)
+        $deadline = [datetime]::UtcNow.AddSeconds($TimeoutSeconds)
+        while (!$process.WaitForExit(100)) {
+            if ([datetime]::UtcNow -ge $deadline) {
+                throw [TimeoutException]::new(
+                    "The captured process exceeded its bounded wait.")
+            }
+        }
         $process.WaitForExit()
         [Threading.Tasks.Task]::WaitAll(
             [Threading.Tasks.Task[]]@($outputCopy, $errorCopy))
         $exitCode = $process.ExitCode
     }
     finally {
+        if ($started -and !$process.HasExited) {
+            Stop-ApexLabOwnedProcessTree -Process $process
+        }
+        if ($null -ne $outputCopy -and $null -ne $errorCopy) {
+            try {
+                [void][Threading.Tasks.Task]::WaitAll(
+                    [Threading.Tasks.Task[]]@($outputCopy, $errorCopy),
+                    5000)
+            }
+            catch {
+                # The primary stage failure remains authoritative.
+            }
+        }
         if ($null -ne $outputStream) { $outputStream.Dispose() }
         if ($null -ne $errorStream) { $errorStream.Dispose() }
         $process.Dispose()
@@ -861,6 +1010,40 @@ function Invoke-ApexLabCapturedProcess {
         ExitCode = [int]$exitCode
         StandardOutputPath = $resolvedOutput
         StandardErrorPath = $resolvedError
+    }
+}
+
+function Stop-ApexLabOwnedProcessTree {
+    param([Parameter(Mandatory)] [Diagnostics.Process] $Process)
+
+    $processId = $Process.Id
+    $children = @(Get-CimInstance `
+        -ClassName Win32_Process `
+        -Filter ("ParentProcessId = {0}" -f $processId) `
+        -ErrorAction SilentlyContinue)
+    foreach ($child in $children) {
+        try {
+            $childProcess = [Diagnostics.Process]::GetProcessById(
+                [int]$child.ProcessId)
+            try {
+                Stop-ApexLabOwnedProcessTree -Process $childProcess
+            }
+            finally {
+                $childProcess.Dispose()
+            }
+        }
+        catch [ArgumentException] {
+            # The child exited between enumeration and termination.
+        }
+    }
+    try {
+        if (!$Process.HasExited) {
+            $Process.Kill()
+            [void]$Process.WaitForExit(5000)
+        }
+    }
+    catch [InvalidOperationException] {
+        # The process exited between the state check and termination.
     }
 }
 
@@ -1048,7 +1231,13 @@ function Read-ApexLabPrivateProbePlan {
     Assert-ApexLabExactProperties -Value $report.playerIndices -Expected @(
         'playerMinimum', 'playerMaximum', 'secondaryMinimum',
         'secondaryMaximum', 'secondaryAbsentCount')
-    if (!(Test-ApexLabNonnegativeInteger $report.playerIndices.secondaryAbsentCount)) {
+    if (!(Test-ApexLabNonnegativeInteger $report.playerIndices.secondaryAbsentCount) `
+        -or !(Test-ApexLabNullableByteRange `
+            -Minimum $report.playerIndices.playerMinimum `
+            -Maximum $report.playerIndices.playerMaximum) `
+        -or !(Test-ApexLabNullableByteRange `
+            -Minimum $report.playerIndices.secondaryMinimum `
+            -Maximum $report.playerIndices.secondaryMaximum)) {
         throw "The private probe player-index aggregates are invalid."
     }
 
@@ -1082,6 +1271,19 @@ function Test-ApexLabNonnegativeInteger {
     param($Value)
 
     return ($Value -is [int] -or $Value -is [long]) -and $Value -ge 0
+}
+
+function Test-ApexLabNullableByteRange {
+    param($Minimum, $Maximum)
+
+    if ($null -eq $Minimum -or $null -eq $Maximum) {
+        return $null -eq $Minimum -and $null -eq $Maximum
+    }
+    return (Test-ApexLabNonnegativeInteger $Minimum) `
+        -and (Test-ApexLabNonnegativeInteger $Maximum) `
+        -and $Minimum -le 255 `
+        -and $Maximum -le 255 `
+        -and $Minimum -le $Maximum
 }
 
 function Assert-ApexLabProbeDescriptor {

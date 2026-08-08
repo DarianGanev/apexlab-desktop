@@ -48,6 +48,49 @@ public sealed class ReplayExecutionTests
         Assert.AreEqual(3L, result.Descriptors[0].Count);
     }
 
+    [TestMethod]
+    public async Task ReplaysEmptyEvidenceWithoutInventingObservations()
+    {
+        using var temporary = TemporaryRoot.Create();
+        var completion = await CreateEvidenceAsync(temporary.Paths, []);
+
+        var result = await ReplayExecution.ExecuteAsync(
+            temporary.Paths,
+            completion.CaptureId,
+            new RawReplayOptions(RawReplayTimingMode.Immediate),
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(0L, result.RecordCount);
+        Assert.AreEqual(0L, result.SequenceGapCount);
+        Assert.AreEqual(0L, result.Counters.Source.DatagramsObserved);
+        Assert.AreEqual(0L, result.Counters.Classifier.SourceDequeued);
+        Assert.IsEmpty(result.Descriptors);
+    }
+
+    [TestMethod]
+    public async Task CancellationReleasesEvidenceHandlesForImmediateDeletion()
+    {
+        using var temporary = TemporaryRoot.Create();
+        var completion = await CreateEvidenceAsync(temporary.Paths, [1, 2, 5]);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            ReplayExecution.ExecuteAsync(
+                temporary.Paths,
+                completion.CaptureId,
+                new RawReplayOptions(RawReplayTimingMode.Immediate),
+                cancellation.Token));
+
+        var prefix = Path.Combine(
+            temporary.Paths.RawCapturesDirectory,
+            completion.CaptureId.Value);
+        File.Delete(prefix + ".apxraw");
+        File.Delete(prefix + ".apxraw.json");
+        Assert.IsFalse(File.Exists(prefix + ".apxraw"));
+        Assert.IsFalse(File.Exists(prefix + ".apxraw.json"));
+    }
+
     public TestContext TestContext { get; set; } = null!;
 
     private static async Task<RawEvidenceCompletion> CreateEvidenceAsync(

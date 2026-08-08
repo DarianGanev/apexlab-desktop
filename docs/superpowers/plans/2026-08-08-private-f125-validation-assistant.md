@@ -363,7 +363,7 @@ zeroPrivacyExcludedEvidence, probeAssumptions, rateGate2x, conclusion
 
 - [ ] **Step 5: Implement safe child-process capture**
 
-Windows PowerShell 5.1 does not expose the modern .NET `ProcessStartInfo.ArgumentList`, so invoke native children with the call operator and array splatting: `& $FilePath @ArgumentList 1> $stdoutPath 2> $stderrPath`. This passes values as arguments without evaluating their contents. Return only the integer `$LASTEXITCODE` plus output-file handles to the workflow. Never use `Invoke-Expression`, `Start-Process -ArgumentList`, a joined argument command, or echo captured child output.
+Windows PowerShell 5.1 does not expose the modern .NET `ProcessStartInfo.ArgumentList`. Initial red-green testing showed that call-operator redirection converts native stderr into formatted `NativeCommandError` records under the workflow's stop-on-error policy. The implemented boundary therefore uses `ProcessStartInfo`, a reviewed Windows command-line quoting routine, raw asynchronous stdout/stderr streams, bounded waits, and exact-owned-process termination. Adversarial tests cover empty values, quotes, trailing backslashes, apostrophes, whitespace, semicolons, dollar signs, and parentheses. Never use `Invoke-Expression`, `Start-Process -ArgumentList`, echo captured child output, or construct a command for shell evaluation.
 
 - [ ] **Step 6: Run focused tests and PowerShell syntax validation**
 

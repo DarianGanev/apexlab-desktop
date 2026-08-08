@@ -26,21 +26,41 @@ $privateRoot = Join-Path $dataRoot 'private-validation'
 $capturesRoot = Join-Path $dataRoot 'captures'
 [void][IO.Directory]::CreateDirectory($privateRoot)
 [void][IO.Directory]::CreateDirectory($capturesRoot)
+[IO.File]::WriteAllText(
+    (Join-Path $privateRoot 'latest-safe.json'),
+    '{"status":"stale"}',
+    [Text.UTF8Encoding]::new($false))
 $runRoot = Join-Path $privateRoot ("run-{0}" -f [guid]::NewGuid().ToString('N'))
 $stages = [Collections.Generic.List[string]]::new()
 $dependencies = @{
     Preflight = {
         param($game, $repo)
         [void][IO.Directory]::CreateDirectory($runRoot)
+        $tools = & $module {
+            param($resolvedRepositoryRoot)
+            Get-ApexLabTrustedExecutablePaths `
+                -RepositoryRoot $resolvedRepositoryRoot
+        } $repo
+        $head = & $module {
+            param($resolvedRunRoot, $gitPath, $resolvedRepositoryRoot)
+            (Invoke-ApexLabPrivateTextCommand `
+                -RunRoot $resolvedRunRoot `
+                -FilePath $gitPath `
+                -Arguments @(
+                    '-C', $resolvedRepositoryRoot, 'rev-parse', '--verify',
+                    'HEAD')).Trim()
+        } $runRoot $tools.GitPath $repo
         [pscustomobject][ordered]@{
             RepositoryRoot = $repo
-            RepositoryHead = 'synthetic'
+            RepositoryHead = $head
             DataRoot = $dataRoot
             CapturesRoot = $capturesRoot
             PrivateRoot = $privateRoot
             RunRoot = $runRoot
             ReplayPath = $replayPath
             ApplicationVersion = '0.1.0'
+            GitPath = $tools.GitPath
+            RequireCleanWorktree = $false
         }
     }
     Probe = {
@@ -89,7 +109,8 @@ $dependencies = @{
                 '--capture-id', $captureId,
                 '--probe-report', $probePath) `
             -StandardOutputPath $outputPath `
-            -StandardErrorPath $errorPath
+            -StandardErrorPath $errorPath `
+            -TimeoutSeconds 300
         if ($result.ExitCode -ne 0) {
             throw 'Synthetic typed validation failed.'
         }
@@ -109,20 +130,13 @@ $dependencies = @{
     }
     SafeSummary = {
         param($context, $validation, $game)
-        $summary = New-ApexLabSafeSummary `
-            -GameBuild $game `
-            -AdapterId $validation.protocolId `
-            -ApplicationVersion $context.ApplicationVersion `
-            -ValidationDate '2026-08-08'
-        $json = $summary | ConvertTo-Json -Compress
-        $temporaryPath = Join-Path $context.PrivateRoot 'synthetic-safe.tmp'
-        $latestPath = Join-Path $context.PrivateRoot 'latest-safe.json'
-        [IO.File]::WriteAllText(
-            $temporaryPath,
-            $json,
-            [Text.UTF8Encoding]::new($false))
-        [IO.File]::Move($temporaryPath, $latestPath)
-        $summary
+        & $module {
+            param($resolvedContext, $resolvedValidation, $resolvedGame)
+            Write-ApexLabProductionSafeSummary `
+                -Context $resolvedContext `
+                -Validation $resolvedValidation `
+                -GameBuild $resolvedGame
+        } $context $validation $game
     }
     Cleanup = {
         param($context)
@@ -141,10 +155,17 @@ $dependencies = @{
     }
 }
 
-$summary = Invoke-ApexLabPrivateF125Validation `
-    -GameBuild $GameBuild `
-    -RepositoryRoot $repositoryRoot `
-    -Dependencies $dependencies
+try {
+    $summary = Invoke-ApexLabPrivateF125Validation `
+        -GameBuild $GameBuild `
+        -RepositoryRoot $repositoryRoot `
+        -Dependencies $dependencies
+}
+catch {
+    [Console]::Error.WriteLine(
+        ("syntheticStage={0}" -f $_.Exception.Data['ApexLabStage']))
+    throw
+}
 [pscustomobject][ordered]@{
     Stages = @($stages)
     Summary = $summary
