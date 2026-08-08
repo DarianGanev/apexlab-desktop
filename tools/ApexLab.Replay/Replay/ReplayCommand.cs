@@ -3,7 +3,6 @@ using System.Text.Json;
 using ApexLab.Application.Capture;
 using ApexLab.Application.Storage;
 using ApexLab.Persistence.Raw;
-using ApexLab.Telemetry.Abstractions.Protocol;
 
 namespace ApexLab.Replay.Replay;
 
@@ -43,59 +42,43 @@ internal static class ReplayCommand
                 "invalidArguments");
         }
 
-        ITelemetryProtocolAdapter? adapter = null;
-        CaptureIngestionCoordinator? coordinator = null;
-        RawEvidenceCapture? unownedCapture = null;
         try
         {
-            unownedCapture = await RawEvidenceReader.OpenAsync(
+            var execution = await ReplayExecution.ExecuteAsync(
                 paths,
                 parsed.CaptureId,
-                cancellationToken).ConfigureAwait(false);
-            if (!ReplayProtocolRegistry.TryResolve(
-                    unownedCapture.Completion.ProtocolId.Value,
-                    out adapter))
-            {
-                await unownedCapture.DisposeAsync().ConfigureAwait(false);
-                unownedCapture = null;
-                return Status(
-                    ReplayExitCode.UnsupportedProtocol,
-                    "unsupportedProtocol");
-            }
-
-            await using var source = new RawReplayDatagramSource(
-                unownedCapture,
                 new RawReplayOptions(
                     parsed.TimingMode,
-                    parsed.SpeedPermille));
-            var capture = unownedCapture;
-            unownedCapture = null;
-            coordinator = new CaptureIngestionCoordinator(
-                source,
-                adapter,
-                SenderPolicy.LoopbackOnly);
-            await coordinator.RunAsync(
+                    parsed.SpeedPermille),
                 cancellationToken).ConfigureAwait(false);
             return Report(
                 ReplayExitCode.Success,
                 "replayed",
-                adapter.ProtocolId,
+                execution.ProtocolId,
                 parsed,
-                capture.Completion.RecordCount,
-                coordinator.Counters);
+                execution.RecordCount,
+                execution.Counters);
+        }
+        catch (ReplayExecutionInterruptedException exception)
+        {
+            return Report(
+                ReplayExitCode.Interrupted,
+                "interrupted",
+                exception.ProtocolId,
+                parsed,
+                recordCount: null,
+                exception.Counters);
         }
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)
         {
-            return coordinator is null
-                ? Status(ReplayExitCode.Interrupted, "interrupted")
-                : Report(
-                    ReplayExitCode.Interrupted,
-                    "interrupted",
-                    adapter!.ProtocolId,
-                    parsed,
-                    recordCount: null,
-                    coordinator.Counters);
+            return Status(ReplayExitCode.Interrupted, "interrupted");
+        }
+        catch (ReplayUnsupportedProtocolException)
+        {
+            return Status(
+                ReplayExitCode.UnsupportedProtocol,
+                "unsupportedProtocol");
         }
         catch (RawEvidenceReadException exception)
         {
@@ -118,21 +101,6 @@ internal static class ReplayCommand
             return Status(
                 ReplayExitCode.UnexpectedFailure,
                 "unexpectedFailure");
-        }
-        finally
-        {
-            if (unownedCapture is not null)
-            {
-                try
-                {
-                    await unownedCapture.DisposeAsync()
-                        .ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Disposal attempts every retained handle internally.
-                }
-            }
         }
     }
 

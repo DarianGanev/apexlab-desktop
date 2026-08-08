@@ -78,6 +78,30 @@ no traffic, `5` for incompatible-only traffic, `6` for interruption, and `7` for
 failure. Optional arguments are `--port`, `--capacity`, `--max-datagram-bytes`, and
 `--duration-seconds`.
 
+## Private F1 25 validation
+
+Use the guided validator when you are ready to test against your own F1 25 installation. Start F1
+25 first, select an offline Time Trial, enable UDP using base F1 25 v3 at
+`127.0.0.1:20777`, and keep ApexLab closed. From a clean feature-branch worktree, run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ValidatePrivateF125.ps1 -GameBuild "your F1 25 build"
+```
+
+The command performs these stages: `preflight`, `probe`, `probeEvaluation`, `capture`,
+`captureSelection`, `privateValidation`, `rateGate`, and `safeSummary`. Drive during the 30-second
+probe. When the native ApexLab window opens, arm and stop exactly one capture, then close ApexLab.
+The command validates that capture twice, checks sequence-gap preservation and privacy exclusions,
+and finishes with a measured synthetic rate gate of at least twice the observed real peak.
+
+On failure, read the printed stage and correction, fix that item, and run the same command again.
+Raw telemetry is preserved locally, while temporary diagnostics are removed. A passing commit-safe
+result is stored at `%LOCALAPPDATA%\ApexLab\private-validation\latest-safe.json`; it contains no
+capture ID, hash, path, sender, session UID, payload, or exact private rate.
+
+This procedure needs no phone, SIM card, cloud account, API key, paid service, or internet upload.
+The Android phone is not part of this Windows capture-validation step.
+
 ## Package and smoke test
 
 Create a guarded self-contained Windows package and verify the extracted executable:
