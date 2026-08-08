@@ -399,15 +399,20 @@ function Get-ApexLabTrustedExecutablePaths {
     $repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\')
     $currentRoot = [IO.Path]::GetFullPath(
         (Get-Location).ProviderPath).TrimEnd('\')
+    $gitSigner = '(^|,\s*)(CN|O)=Johannes Schindelin(,|$)'
+    $dotNetSigner = '(^|,\s*)CN=\.NET(,|$)'
+    $powerShellSigner = '(^|,\s*)O=Microsoft (Windows|Corporation)(,|$)'
     $paths = [ordered]@{
         GitPath = Resolve-ApexLabInstalledApplication `
             -Name 'git.exe' `
             -RepositoryRoot $repositoryRoot `
-            -CurrentRoot $currentRoot
+            -CurrentRoot $currentRoot `
+            -AllowedSignerSubjectPattern $gitSigner
         DotNetPath = Resolve-ApexLabInstalledApplication `
             -Name 'dotnet.exe' `
             -RepositoryRoot $repositoryRoot `
-            -CurrentRoot $currentRoot
+            -CurrentRoot $currentRoot `
+            -AllowedSignerSubjectPattern $dotNetSigner
         PowerShellPath = Join-Path $PSHOME 'powershell.exe'
     }
     foreach ($name in @($paths.Keys)) {
@@ -425,6 +430,11 @@ function Get-ApexLabTrustedExecutablePaths {
         }
         $paths[$name] = $path
     }
+    if (!(Test-ApexLabTrustedApplicationPublisher `
+        -Path $paths.PowerShellPath `
+        -AllowedSignerSubjectPattern $powerShellSigner)) {
+        throw "A trusted validation executable is unavailable."
+    }
     return [pscustomobject]$paths
 }
 
@@ -432,7 +442,8 @@ function Resolve-ApexLabInstalledApplication {
     param(
         [Parameter(Mandatory)] [string] $Name,
         [Parameter(Mandatory)] [string] $RepositoryRoot,
-        [Parameter(Mandatory)] [string] $CurrentRoot
+        [Parameter(Mandatory)] [string] $CurrentRoot,
+        [Parameter(Mandatory)] [string] $AllowedSignerSubjectPattern
     )
 
     $commands = @(Get-Command `
@@ -455,11 +466,30 @@ function Resolve-ApexLabInstalledApplication {
                 -Root $RepositoryRoot) `
             -and !(Test-ApexLabPathWithinRoot `
                 -Path $candidate `
-                -Root $CurrentRoot)) {
+                -Root $CurrentRoot) `
+            -and (Test-ApexLabTrustedApplicationPublisher `
+                -Path $candidate `
+                -AllowedSignerSubjectPattern $AllowedSignerSubjectPattern)) {
             return $candidate
         }
     }
     throw "A trusted validation executable is unavailable."
+}
+
+function Test-ApexLabTrustedApplicationPublisher {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $AllowedSignerSubjectPattern
+    )
+
+    $signature = Get-AuthenticodeSignature `
+        -LiteralPath $Path `
+        -ErrorAction SilentlyContinue
+    return $null -ne $signature `
+        -and $signature.Status.ToString() -ceq 'Valid' `
+        -and $null -ne $signature.SignerCertificate `
+        -and $signature.SignerCertificate.Subject `
+            -match $AllowedSignerSubjectPattern
 }
 
 function Test-ApexLabPathWithinRoot {
@@ -502,7 +532,9 @@ function Invoke-ApexLabProductionCapture {
     param(
         [Parameter(Mandatory)] $Context,
         [ValidateRange(1, 86400)]
-        [int] $TimeoutSeconds = 21600
+        [int] $TimeoutSeconds = 21600,
+        [AllowEmptyString()]
+        [string] $ApplicationArguments = ''
     )
 
     Assert-ApexLabFileSha256 `
@@ -514,6 +546,7 @@ function Invoke-ApexLabProductionCapture {
         'Arm and stop exactly one capture in ApexLab, then close ApexLab.')
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $Context.ApplicationPath
+    $startInfo.Arguments = $ApplicationArguments
     $startInfo.UseShellExecute = $true
     $process = [Diagnostics.Process]::Start($startInfo)
     if ($null -eq $process) {
@@ -1105,8 +1138,27 @@ function Wait-ApexLabOwnedInteractiveProcess {
     }
     finally {
         if (!$Process.HasExited) {
-            Stop-ApexLabOwnedProcessTree -Process $Process
+            Stop-ApexLabOwnedProcess -Process $Process
         }
+    }
+}
+
+function Stop-ApexLabOwnedProcess {
+    param([Parameter(Mandatory)] [Diagnostics.Process] $Process)
+
+    try {
+        if (!$Process.HasExited) {
+            $Process.Kill()
+        }
+        if (!$Process.WaitForExit(5000)) {
+            throw "The owned process did not terminate within its bounded wait."
+        }
+    }
+    catch [InvalidOperationException] {
+        # The exact owned process exited between the state check and termination.
+    }
+    if (!$Process.HasExited) {
+        throw "The owned process did not terminate."
     }
 }
 

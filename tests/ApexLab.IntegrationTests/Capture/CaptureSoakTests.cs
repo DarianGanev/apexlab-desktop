@@ -14,7 +14,7 @@ public sealed class CaptureSoakTests
 
     [TestMethod]
     [TestCategory("Soak")]
-    [Timeout(180_000, CooperativeCancellation = true)]
+    [Timeout(3_600_000, CooperativeCancellation = true)]
     public async Task SustainedLoopbackOverloadRetainsBoundedMemoryAndExactSourceAccounting()
     {
         var requested = ReadDatagramCount();

@@ -111,6 +111,20 @@ public sealed class PrivateF125PowerShellTests
     }
 
     [TestMethod]
+    public void SoakTimeoutCoversTheSlowestAcceptedRatePlan()
+    {
+        var method = typeof(Capture.CaptureSoakTests).GetMethod(
+            nameof(Capture.CaptureSoakTests
+                .SustainedLoopbackOverloadRetainsBoundedMemoryAndExactSourceAccounting));
+        Assert.IsNotNull(method);
+        var timeout = method.CustomAttributes.Single(
+            attribute => attribute.AttributeType.Name == "TimeoutAttribute");
+        var timeoutMilliseconds = (int)timeout.ConstructorArguments[0].Value!;
+
+        Assert.IsGreaterThanOrEqualTo(3_600_000, timeoutMilliseconds);
+    }
+
+    [TestMethod]
     public async Task SelectsExactlyOneNewCanonicalFinalizedManifest()
     {
         const string prior = "00112233445546778899aabbccddeeff";
@@ -410,42 +424,40 @@ public sealed class PrivateF125PowerShellTests
             $"apexlab-ui-timeout-{Guid.NewGuid():N}");
         Directory.CreateDirectory(temporary);
         var childPath = Path.Combine(temporary, "child.ps1");
-        var launcherPath = Path.Combine(temporary, "launcher.cmd");
         var capturesPath = Path.Combine(temporary, "captures");
         var pidPath = Path.Combine(temporary, "pid.txt");
+        var powerShellPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System),
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe");
         Directory.CreateDirectory(capturesPath);
         await File.WriteAllTextAsync(
             childPath,
             "[IO.File]::WriteAllText($env:APEXLAB_UI_PID,[string]$PID)\n"
             + "Start-Sleep -Seconds 30\n");
-        await File.WriteAllTextAsync(
-            launcherPath,
-            "@\"%APEXLAB_POWERSHELL%\" -NoProfile -File \"%APEXLAB_UI_CHILD%\"\r\n");
         try
         {
             using var result = await InvokeModuleAsync(
                 "$context=[pscustomobject]@{"
-                + "ApplicationPath=$env:APEXLAB_UI_LAUNCHER;"
+                + "ApplicationPath=$env:APEXLAB_POWERSHELL;"
                 + "ApplicationHash=$env:APEXLAB_UI_HASH;"
                 + "CapturesRoot=$env:APEXLAB_UI_CAPTURES}; "
                 + "$module=Get-Module PrivateF125Validation; & $module { "
                 + "param($value) Invoke-ApexLabProductionCapture "
-                + "-Context $value -TimeoutSeconds 1 } $context",
+                + "-Context $value -TimeoutSeconds 5 "
+                + "-ApplicationArguments $env:APEXLAB_UI_ARGUMENTS } $context",
                 new Dictionary<string, string>
                 {
                     ["APEXLAB_UI_CHILD"] = childPath,
                     ["APEXLAB_UI_PID"] = pidPath,
-                    ["APEXLAB_UI_LAUNCHER"] = launcherPath,
                     ["APEXLAB_UI_CAPTURES"] = capturesPath,
                     ["APEXLAB_UI_HASH"] = Convert.ToHexString(
                         System.Security.Cryptography.SHA256.HashData(
-                            await File.ReadAllBytesAsync(launcherPath)))
+                            await File.ReadAllBytesAsync(powerShellPath)))
                         .ToLowerInvariant(),
-                    ["APEXLAB_POWERSHELL"] = Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.System),
-                        "WindowsPowerShell",
-                        "v1.0",
-                        "powershell.exe"),
+                    ["APEXLAB_POWERSHELL"] = powerShellPath,
+                    ["APEXLAB_UI_ARGUMENTS"] = $"-NoProfile -File \"{childPath}\"",
                 });
 
             Assert.AreNotEqual(0, result.ExitCode);
@@ -555,6 +567,36 @@ public sealed class PrivateF125PowerShellTests
         await File.WriteAllBytesAsync(customDotNet, [0]);
         try
         {
+            using var untrusted = await InvokeModuleAsync(
+                "$module=Get-Module PrivateF125Validation; $value=& $module { "
+                + "param($repo) Get-ApexLabTrustedExecutablePaths "
+                + "-RepositoryRoot $repo } $env:APEXLAB_REPOSITORY; "
+                + "$value | ConvertTo-Json -Compress",
+                new Dictionary<string, string>
+                {
+                    ["APEXLAB_REPOSITORY"] = repositoryRoot,
+                    ["PATH"] = customTools + Path.PathSeparator
+                        + Environment.GetEnvironmentVariable("PATH"),
+                });
+
+            Assert.AreEqual(0, untrusted.ExitCode, untrusted.StandardError);
+            using var untrustedDocument = JsonDocument.Parse(
+                untrusted.StandardOutput);
+            Assert.AreNotEqual(
+                customGit,
+                untrustedDocument.RootElement.GetProperty("GitPath").GetString());
+            Assert.AreNotEqual(
+                customDotNet,
+                untrustedDocument.RootElement.GetProperty("DotNetPath").GetString());
+
+            File.Copy(
+                document.RootElement.GetProperty("GitPath").GetString()!,
+                customGit,
+                overwrite: true);
+            File.Copy(
+                document.RootElement.GetProperty("DotNetPath").GetString()!,
+                customDotNet,
+                overwrite: true);
             using var custom = await InvokeModuleAsync(
                 "$module=Get-Module PrivateF125Validation; $value=& $module { "
                 + "param($repo) Get-ApexLabTrustedExecutablePaths "
