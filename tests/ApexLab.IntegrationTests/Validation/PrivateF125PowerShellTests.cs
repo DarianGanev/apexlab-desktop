@@ -18,15 +18,22 @@ public sealed class PrivateF125PowerShellTests
     [TestMethod]
     public async Task DerivesFeasibleRateGateBoundsWithoutPrintingThem()
     {
+        using var minimum = await InvokeModuleAsync(
+            "$value = Get-ApexLabRateGatePlan -Peak 1; $value | ConvertTo-Json -Compress");
         using var lower = await InvokeModuleAsync(
             "$value = Get-ApexLabRateGatePlan -Peak 70; $value | ConvertTo-Json -Compress");
         using var upper = await InvokeModuleAsync(
             "$value = Get-ApexLabRateGatePlan -Peak 37878; $value | ConvertTo-Json -Compress");
 
+        Assert.AreEqual(0, minimum.ExitCode, minimum.StandardError);
         Assert.AreEqual(0, lower.ExitCode, lower.StandardError);
         Assert.AreEqual(0, upper.ExitCode, upper.StandardError);
+        using var minimumJson = JsonDocument.Parse(minimum.StandardOutput);
         using var lowerJson = JsonDocument.Parse(lower.StandardOutput);
         using var upperJson = JsonDocument.Parse(upper.StandardOutput);
+        Assert.AreEqual(
+            3_574,
+            minimumJson.RootElement.GetProperty("TimeoutSeconds").GetInt32());
         Assert.AreEqual(
             140,
             lowerJson.RootElement.GetProperty("MinimumRate").GetInt32());
@@ -37,6 +44,9 @@ public sealed class PrivateF125PowerShellTests
             10_000,
             lowerJson.RootElement.GetProperty("DatagramCount").GetInt32());
         Assert.AreEqual(
+            305,
+            lowerJson.RootElement.GetProperty("TimeoutSeconds").GetInt32());
+        Assert.AreEqual(
             75_756,
             upperJson.RootElement.GetProperty("MinimumRate").GetInt32());
         Assert.AreEqual(
@@ -45,6 +55,59 @@ public sealed class PrivateF125PowerShellTests
         Assert.AreEqual(
             4_999_920,
             upperJson.RootElement.GetProperty("DatagramCount").GetInt32());
+        Assert.AreEqual(
+            300,
+            upperJson.RootElement.GetProperty("TimeoutSeconds").GetInt32());
+    }
+
+    [TestMethod]
+    public async Task ProductionRateGateUsesTheTimeoutDerivedFromItsPlan()
+    {
+        var temporary = Path.Combine(
+            Path.GetTempPath(),
+            $"apexlab-rate-timeout-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporary);
+        var soakPath = Path.Combine(temporary, "slow-soak.ps1");
+        await File.WriteAllTextAsync(
+            soakPath,
+            "param([int]$DatagramCount,"
+            + "[int]$TargetDatagramsPerSecond,"
+            + "[int]$MeasuredRealPeakDatagramsPerSecond,"
+            + "[int]$MinimumObservedFractionPermille,"
+            + "[string]$Configuration)\n"
+            + "Start-Sleep -Seconds 3\n");
+        try
+        {
+            using var result = await InvokeModuleAsync(
+                "$context=[pscustomobject]@{"
+                + "SoakPath=$env:APEXLAB_SLOW_SOAK;"
+                + "SoakHash=$env:APEXLAB_SLOW_SOAK_HASH;"
+                + "RunRoot=$env:APEXLAB_RATE_RUN;"
+                + "PowerShellPath=$PSHOME+'\\powershell.exe'}; "
+                + "$plan=[pscustomobject]@{MinimumRate=2;TargetRate=3;"
+                + "DatagramCount=10000;TimeoutSeconds=1}; "
+                + "$module=Get-Module PrivateF125Validation; & $module { "
+                + "param($context,$plan) Invoke-ApexLabProductionRateGate "
+                + "-Context $context -RatePlan $plan } $context $plan",
+                new Dictionary<string, string>
+                {
+                    ["APEXLAB_SLOW_SOAK"] = soakPath,
+                    ["APEXLAB_RATE_RUN"] = temporary,
+                    ["APEXLAB_SLOW_SOAK_HASH"] = Convert.ToHexString(
+                        System.Security.Cryptography.SHA256.HashData(
+                            await File.ReadAllBytesAsync(soakPath)))
+                        .ToLowerInvariant(),
+                });
+
+            Assert.AreNotEqual(0, result.ExitCode);
+            StringAssert.Contains(
+                result.StandardError,
+                "captured process exceeded its bounded wait");
+        }
+        finally
+        {
+            Directory.Delete(temporary, recursive: true);
+        }
     }
 
     [TestMethod]
@@ -340,6 +403,77 @@ public sealed class PrivateF125PowerShellTests
     }
 
     [TestMethod]
+    public async Task TerminatesTheOwnedInteractiveProcessWhenItsWaitExpires()
+    {
+        var temporary = Path.Combine(
+            Path.GetTempPath(),
+            $"apexlab-ui-timeout-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporary);
+        var childPath = Path.Combine(temporary, "child.ps1");
+        var launcherPath = Path.Combine(temporary, "launcher.cmd");
+        var capturesPath = Path.Combine(temporary, "captures");
+        var pidPath = Path.Combine(temporary, "pid.txt");
+        Directory.CreateDirectory(capturesPath);
+        await File.WriteAllTextAsync(
+            childPath,
+            "[IO.File]::WriteAllText($env:APEXLAB_UI_PID,[string]$PID)\n"
+            + "Start-Sleep -Seconds 30\n");
+        await File.WriteAllTextAsync(
+            launcherPath,
+            "@\"%APEXLAB_POWERSHELL%\" -NoProfile -File \"%APEXLAB_UI_CHILD%\"\r\n");
+        try
+        {
+            using var result = await InvokeModuleAsync(
+                "$context=[pscustomobject]@{"
+                + "ApplicationPath=$env:APEXLAB_UI_LAUNCHER;"
+                + "ApplicationHash=$env:APEXLAB_UI_HASH;"
+                + "CapturesRoot=$env:APEXLAB_UI_CAPTURES}; "
+                + "$module=Get-Module PrivateF125Validation; & $module { "
+                + "param($value) Invoke-ApexLabProductionCapture "
+                + "-Context $value -TimeoutSeconds 1 } $context",
+                new Dictionary<string, string>
+                {
+                    ["APEXLAB_UI_CHILD"] = childPath,
+                    ["APEXLAB_UI_PID"] = pidPath,
+                    ["APEXLAB_UI_LAUNCHER"] = launcherPath,
+                    ["APEXLAB_UI_CAPTURES"] = capturesPath,
+                    ["APEXLAB_UI_HASH"] = Convert.ToHexString(
+                        System.Security.Cryptography.SHA256.HashData(
+                            await File.ReadAllBytesAsync(launcherPath)))
+                        .ToLowerInvariant(),
+                    ["APEXLAB_POWERSHELL"] = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.System),
+                        "WindowsPowerShell",
+                        "v1.0",
+                        "powershell.exe"),
+                });
+
+            Assert.AreNotEqual(0, result.ExitCode);
+            StringAssert.Contains(
+                result.StandardError,
+                "interactive process exceeded its bounded wait");
+            Assert.IsTrue(File.Exists(pidPath));
+            var pid = int.Parse(await File.ReadAllTextAsync(pidPath));
+            Assert.IsFalse(IsProcessRunning(pid));
+        }
+        finally
+        {
+            if (File.Exists(pidPath))
+            {
+                var pid = int.Parse(await File.ReadAllTextAsync(pidPath));
+                try
+                {
+                    Process.GetProcessById(pid).Kill(entireProcessTree: true);
+                }
+                catch (ArgumentException)
+                {
+                }
+            }
+            Directory.Delete(temporary, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task RefusesToRecursivelyDeleteARunTreeContainingAReparsePoint()
     {
         var temporary = Path.Combine(
@@ -409,6 +543,42 @@ public sealed class PrivateF125PowerShellTests
             Assert.IsFalse(path.StartsWith(
                 repositoryRoot + Path.DirectorySeparatorChar,
                 StringComparison.OrdinalIgnoreCase));
+        }
+
+        var customTools = Path.Combine(
+            Path.GetTempPath(),
+            $"apexlab-custom-tools-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(customTools);
+        var customGit = Path.Combine(customTools, "git.exe");
+        var customDotNet = Path.Combine(customTools, "dotnet.exe");
+        await File.WriteAllBytesAsync(customGit, [0]);
+        await File.WriteAllBytesAsync(customDotNet, [0]);
+        try
+        {
+            using var custom = await InvokeModuleAsync(
+                "$module=Get-Module PrivateF125Validation; $value=& $module { "
+                + "param($repo) Get-ApexLabTrustedExecutablePaths "
+                + "-RepositoryRoot $repo } $env:APEXLAB_REPOSITORY; "
+                + "$value | ConvertTo-Json -Compress",
+                new Dictionary<string, string>
+                {
+                    ["APEXLAB_REPOSITORY"] = repositoryRoot,
+                    ["PATH"] = customTools + Path.PathSeparator
+                        + Environment.GetEnvironmentVariable("PATH"),
+                });
+
+            Assert.AreEqual(0, custom.ExitCode, custom.StandardError);
+            using var customDocument = JsonDocument.Parse(custom.StandardOutput);
+            Assert.AreEqual(
+                customGit,
+                customDocument.RootElement.GetProperty("GitPath").GetString());
+            Assert.AreEqual(
+                customDotNet,
+                customDocument.RootElement.GetProperty("DotNetPath").GetString());
+        }
+        finally
+        {
+            Directory.Delete(customTools, recursive: true);
         }
     }
 

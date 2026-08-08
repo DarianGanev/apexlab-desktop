@@ -80,8 +80,12 @@ function Get-ApexLabRateGatePlan {
     $datagramCount = [long][Math]::Max(
         10000L,
         60L * $targetRate)
+    $injectionSeconds = [int][Math]::Ceiling(
+        [decimal]$datagramCount / [decimal]$targetRate)
+    $timeoutSeconds = $injectionSeconds + 240
     if ($targetRate -gt 100000 `
-        -or $datagramCount -gt 5000000) {
+        -or $datagramCount -gt 5000000 `
+        -or $timeoutSeconds -gt 3600) {
         throw "The measured peak cannot produce a feasible private rate gate."
     }
 
@@ -89,6 +93,7 @@ function Get-ApexLabRateGatePlan {
         MinimumRate = $minimumRate
         TargetRate = $targetRate
         DatagramCount = [int]$datagramCount
+        TimeoutSeconds = [int]$timeoutSeconds
     }
 }
 
@@ -391,25 +396,84 @@ function Invoke-ApexLabProductionPreflight {
 function Get-ApexLabTrustedExecutablePaths {
     param([Parameter(Mandatory)] [string] $RepositoryRoot)
 
-    $programFiles = [Environment]::GetFolderPath(
-        [Environment+SpecialFolder]::ProgramFiles)
+    $repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\')
+    $currentRoot = [IO.Path]::GetFullPath(
+        (Get-Location).ProviderPath).TrimEnd('\')
     $paths = [ordered]@{
-        GitPath = Join-Path $programFiles 'Git/cmd/git.exe'
-        DotNetPath = Join-Path $programFiles 'dotnet/dotnet.exe'
+        GitPath = Resolve-ApexLabInstalledApplication `
+            -Name 'git.exe' `
+            -RepositoryRoot $repositoryRoot `
+            -CurrentRoot $currentRoot
+        DotNetPath = Resolve-ApexLabInstalledApplication `
+            -Name 'dotnet.exe' `
+            -RepositoryRoot $repositoryRoot `
+            -CurrentRoot $currentRoot
         PowerShellPath = Join-Path $PSHOME 'powershell.exe'
     }
-    $repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\')
     foreach ($name in @($paths.Keys)) {
-        $path = [IO.Path]::GetFullPath($paths[$name])
+        $path = (Resolve-Path `
+            -LiteralPath $paths[$name] `
+            -ErrorAction Stop).ProviderPath
         if (![IO.File]::Exists($path) `
-            -or $path.StartsWith(
-                "$repositoryRoot\",
-                [StringComparison]::OrdinalIgnoreCase)) {
+            -or (Test-ApexLabPathWithinRoot `
+                -Path $path `
+                -Root $repositoryRoot) `
+            -or (Test-ApexLabPathWithinRoot `
+                -Path $path `
+                -Root $currentRoot)) {
             throw "A trusted validation executable is unavailable."
         }
         $paths[$name] = $path
     }
     return [pscustomobject]$paths
+}
+
+function Resolve-ApexLabInstalledApplication {
+    param(
+        [Parameter(Mandatory)] [string] $Name,
+        [Parameter(Mandatory)] [string] $RepositoryRoot,
+        [Parameter(Mandatory)] [string] $CurrentRoot
+    )
+
+    $commands = @(Get-Command `
+        -Name $Name `
+        -CommandType Application `
+        -All `
+        -ErrorAction SilentlyContinue)
+    foreach ($command in $commands) {
+        try {
+            $candidate = (Resolve-Path `
+                -LiteralPath $command.Source `
+                -ErrorAction Stop).ProviderPath
+        }
+        catch {
+            continue
+        }
+        if ([IO.File]::Exists($candidate) `
+            -and !(Test-ApexLabPathWithinRoot `
+                -Path $candidate `
+                -Root $RepositoryRoot) `
+            -and !(Test-ApexLabPathWithinRoot `
+                -Path $candidate `
+                -Root $CurrentRoot)) {
+            return $candidate
+        }
+    }
+    throw "A trusted validation executable is unavailable."
+}
+
+function Test-ApexLabPathWithinRoot {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Root
+    )
+
+    $path = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $root = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    return $path.Equals($root, [StringComparison]::OrdinalIgnoreCase) `
+        -or $path.StartsWith(
+            "$root\",
+            [StringComparison]::OrdinalIgnoreCase)
 }
 
 function Invoke-ApexLabProductionProbe {
@@ -435,7 +499,11 @@ function Invoke-ApexLabProductionProbe {
 }
 
 function Invoke-ApexLabProductionCapture {
-    param([Parameter(Mandatory)] $Context)
+    param(
+        [Parameter(Mandatory)] $Context,
+        [ValidateRange(1, 86400)]
+        [int] $TimeoutSeconds = 21600
+    )
 
     Assert-ApexLabFileSha256 `
         -Path $Context.ApplicationPath `
@@ -452,8 +520,10 @@ function Invoke-ApexLabProductionCapture {
         throw "ApexLab could not be started."
     }
     try {
-        $process.WaitForExit()
-        if ($process.ExitCode -ne 0) {
+        $exitCode = Wait-ApexLabOwnedInteractiveProcess `
+            -Process $process `
+            -TimeoutSeconds $TimeoutSeconds
+        if ($exitCode -ne 0) {
             throw "ApexLab closed with a failure."
         }
     }
@@ -516,12 +586,12 @@ function Invoke-ApexLabProductionRateGate {
             '-DatagramCount', [string]$RatePlan.DatagramCount,
             '-TargetDatagramsPerSecond', [string]$RatePlan.TargetRate,
             '-MeasuredRealPeakDatagramsPerSecond',
-            [string]$RatePlan.MinimumRate / 2,
+            [string]($RatePlan.MinimumRate / 2),
             '-MinimumObservedFractionPermille', '950',
             '-Configuration', 'Release') `
         -StandardOutputPath $outputPath `
         -StandardErrorPath $errorPath `
-        -TimeoutSeconds 600
+        -TimeoutSeconds $RatePlan.TimeoutSeconds
     if ($result.ExitCode -ne 0) {
         throw "The measured private rate gate failed."
     }
@@ -1010,6 +1080,33 @@ function Invoke-ApexLabCapturedProcess {
         ExitCode = [int]$exitCode
         StandardOutputPath = $resolvedOutput
         StandardErrorPath = $resolvedError
+    }
+}
+
+function Wait-ApexLabOwnedInteractiveProcess {
+    param(
+        [Parameter(Mandatory)]
+        [Diagnostics.Process] $Process,
+
+        [ValidateRange(1, 86400)]
+        [int] $TimeoutSeconds = 21600
+    )
+
+    $deadline = [datetime]::UtcNow.AddSeconds($TimeoutSeconds)
+    try {
+        while (!$Process.WaitForExit(100)) {
+            if ([datetime]::UtcNow -ge $deadline) {
+                throw [TimeoutException]::new(
+                    "The interactive process exceeded its bounded wait.")
+            }
+        }
+        $Process.WaitForExit()
+        return [int]$Process.ExitCode
+    }
+    finally {
+        if (!$Process.HasExited) {
+            Stop-ApexLabOwnedProcessTree -Process $Process
+        }
     }
 }
 
