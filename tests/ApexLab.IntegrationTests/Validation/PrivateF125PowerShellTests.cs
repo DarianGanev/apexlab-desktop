@@ -317,6 +317,163 @@ public sealed class PrivateF125PowerShellTests
         }
     }
 
+    [TestMethod]
+    public async Task RunsTheGuidedWorkflowInOrderAndAlwaysCleansItsRunDirectory()
+    {
+        var temporary = Path.Combine(
+            Path.GetTempPath(),
+            $"apexlab-workflow-order-{Guid.NewGuid():N}");
+        var script = WorkflowDependencyScript()
+            + "$result = Invoke-ApexLabPrivateF125Validation "
+            + "-GameBuild '1.2.3 test' -RepositoryRoot $env:APEXLAB_REPOSITORY "
+            + "-Dependencies $dependencies; "
+            + "[pscustomobject]@{Stages=$script:stages;Cleaned=$script:cleaned;"
+            + "Status=$result.status} | ConvertTo-Json -Compress";
+        using var result = await InvokeModuleAsync(
+            script,
+            new Dictionary<string, string>
+            {
+                ["APEXLAB_REPOSITORY"] = FindRepositoryRoot(),
+                ["APEXLAB_RUN_ROOT"] = temporary,
+            });
+
+        Assert.AreEqual(0, result.ExitCode, result.StandardError);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "preflight", "probe", "probeEvaluation", "capture",
+                "captureSelection", "privateValidation", "rateGate",
+                "safeSummary",
+            },
+            document.RootElement.GetProperty("Stages")
+                .EnumerateArray()
+                .Select(value => value.GetString())
+                .ToArray());
+        Assert.IsTrue(document.RootElement.GetProperty("Cleaned").GetBoolean());
+        Assert.AreEqual(
+            "passed",
+            document.RootElement.GetProperty("Status").GetString());
+        Assert.IsFalse(Directory.Exists(temporary));
+    }
+
+    [TestMethod]
+    public async Task FailsClosedAtEveryWorkflowStageAndCleansTemporaryFiles()
+    {
+        string[] stages =
+        [
+            "preflight", "probe", "probeEvaluation", "capture",
+            "captureSelection", "privateValidation", "rateGate",
+            "safeSummary",
+        ];
+        foreach (var stage in stages)
+        {
+            var temporary = Path.Combine(
+                Path.GetTempPath(),
+                $"apexlab-workflow-failure-{Guid.NewGuid():N}");
+            var script = WorkflowDependencyScript()
+                + "try { Invoke-ApexLabPrivateF125Validation "
+                + "-GameBuild '1.2.3 test' -RepositoryRoot $env:APEXLAB_REPOSITORY "
+                + "-Dependencies $dependencies; exit 90 } catch { "
+                + "[pscustomobject]@{Stage=$_.Exception.Data['ApexLabStage'];"
+                + "Code=$_.Exception.Data['ApexLabExitCode'];"
+                + "Correction=$_.Exception.Data['ApexLabCorrection'];"
+                + "Cleaned=$script:cleaned;Stages=$script:stages} | "
+                + "ConvertTo-Json -Compress }";
+            using var result = await InvokeModuleAsync(
+                script,
+                new Dictionary<string, string>
+                {
+                    ["APEXLAB_REPOSITORY"] = FindRepositoryRoot(),
+                    ["APEXLAB_RUN_ROOT"] = temporary,
+                    ["APEXLAB_FAIL_STAGE"] = stage,
+                });
+
+            Assert.AreEqual(0, result.ExitCode, result.StandardError);
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            Assert.AreEqual(
+                stage,
+                document.RootElement.GetProperty("Stage").GetString());
+            Assert.IsGreaterThanOrEqualTo(
+                40,
+                document.RootElement.GetProperty("Code").GetInt32());
+            Assert.IsFalse(string.IsNullOrWhiteSpace(
+                document.RootElement.GetProperty("Correction").GetString()));
+            Assert.IsTrue(document.RootElement.GetProperty("Cleaned").GetBoolean());
+            var observed = document.RootElement.GetProperty("Stages")
+                .EnumerateArray()
+                .Select(value => value.GetString())
+                .ToArray();
+            Assert.AreEqual(stage, observed[^1]);
+            Assert.IsFalse(Directory.Exists(temporary));
+        }
+    }
+
+    [TestMethod]
+    public async Task PublicValidationScriptExposesOnlyTheBoundedGameBuildInput()
+    {
+        var scriptPath = Path.Combine(
+            FindRepositoryRoot(),
+            "scripts",
+            "ValidatePrivateF125.ps1");
+        using var result = await InvokeModuleAsync(
+            "$command=Get-Command -Name $env:APEXLAB_PUBLIC_SCRIPT; "
+            + "$parameter=$command.Parameters['GameBuild']; "
+            + "$parameterAttribute=$parameter.Attributes | Where-Object { "
+            + "$_ -is [Management.Automation.ParameterAttribute] }; "
+            + "[pscustomobject]@{Exists=($null-ne $parameter);"
+            + "Mandatory=$parameterAttribute.Mandatory;"
+            + "HasDependencies=$command.Parameters.ContainsKey('Dependencies')} | "
+            + "ConvertTo-Json -Compress",
+            new Dictionary<string, string>
+            {
+                ["APEXLAB_PUBLIC_SCRIPT"] = scriptPath,
+            });
+
+        Assert.AreEqual(0, result.ExitCode, result.StandardError);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        Assert.IsTrue(document.RootElement.GetProperty("Exists").GetBoolean());
+        Assert.IsTrue(document.RootElement.GetProperty("Mandatory").GetBoolean());
+        Assert.IsFalse(
+            document.RootElement.GetProperty("HasDependencies").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task MapsInteractiveCancellationToItsStableExitAndStillCleans()
+    {
+        string[] stages = ["probe", "capture", "privateValidation", "rateGate"];
+        foreach (var stage in stages)
+        {
+            var temporary = Path.Combine(
+                Path.GetTempPath(),
+                $"apexlab-workflow-cancel-{Guid.NewGuid():N}");
+            var script = WorkflowDependencyScript()
+                + "try { Invoke-ApexLabPrivateF125Validation "
+                + "-GameBuild '1.2.3 test' -RepositoryRoot $env:APEXLAB_REPOSITORY "
+                + "-Dependencies $dependencies; exit 90 } catch { "
+                + "[pscustomobject]@{Stage=$_.Exception.Data['ApexLabStage'];"
+                + "Code=$_.Exception.Data['ApexLabExitCode'];"
+                + "Cleaned=$script:cleaned} | ConvertTo-Json -Compress }";
+            using var result = await InvokeModuleAsync(
+                script,
+                new Dictionary<string, string>
+                {
+                    ["APEXLAB_REPOSITORY"] = FindRepositoryRoot(),
+                    ["APEXLAB_RUN_ROOT"] = temporary,
+                    ["APEXLAB_CANCEL_STAGE"] = stage,
+                });
+
+            Assert.AreEqual(0, result.ExitCode, result.StandardError);
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            Assert.AreEqual(
+                stage,
+                document.RootElement.GetProperty("Stage").GetString());
+            Assert.AreEqual(48, document.RootElement.GetProperty("Code").GetInt32());
+            Assert.IsTrue(document.RootElement.GetProperty("Cleaned").GetBoolean());
+            Assert.IsFalse(Directory.Exists(temporary));
+        }
+    }
+
     private static async Task<PowerShellResult> InvokeModuleAsync(
         string body,
         IReadOnlyDictionary<string, string>? environment = null)
@@ -414,6 +571,40 @@ public sealed class PrivateF125PowerShellTests
             new ProbeSequenceReport(0, 0, 0, 0),
             new ProbeHeaderReport(1, 0, 0, 0, 0, 0),
             new ProbePlayerIndexReport(3, 3, null, null, 3)));
+
+    private static string WorkflowDependencyScript() =>
+        "$script:stages=[Collections.Generic.List[string]]::new(); "
+        + "$script:cleaned=$false; "
+        + "function Enter-Stage([string]$Name) { $script:stages.Add($Name); "
+        + "if($env:APEXLAB_FAIL_STAGE -ceq $Name){throw 'PRIVATE failure'}; "
+        + "if($env:APEXLAB_CANCEL_STAGE -ceq $Name){"
+        + "throw [OperationCanceledException]::new()} }; "
+        + "$validator='{\"schemaVersion\":1,\"status\":\"validated\","
+        + "\"protocolId\":\"ea-f1-25-v3\",\"manifestIntegrity\":true,"
+        + "\"deterministicReplay\":true,\"sequenceGapPreservation\":true,"
+        + "\"zeroPrivacyExcludedEvidence\":true,\"probeAssumptions\":true}'; "
+        + "$dependencies=@{ "
+        + "Preflight={param($game,$repo) Enter-Stage 'preflight'; "
+        + "[IO.Directory]::CreateDirectory($env:APEXLAB_RUN_ROOT)|Out-Null; "
+        + "[pscustomobject]@{RunRoot=$env:APEXLAB_RUN_ROOT;RepositoryHead='abc';"
+        + "ApplicationVersion='0.1.0'} }; "
+        + "Probe={param($context) Enter-Stage 'probe'; 'probe.json'}; "
+        + "ProbeEvaluation={param($path) Enter-Stage 'probeEvaluation'; "
+        + "[pscustomobject]@{ProtocolId='ea-f1-25-v3';"
+        + "MeasuredPeakDatagramsPerSecond=70} }; "
+        + "Capture={param($context) Enter-Stage 'capture'; "
+        + "[pscustomobject]@{Before=@();After=@('00112233445546778899aabbccddeeff.apxraw.json')} }; "
+        + "CaptureSelection={param($capture) Enter-Stage 'captureSelection'; "
+        + "'00112233445546778899aabbccddeeff'}; "
+        + "PrivateValidation={param($context,$captureId,$probePath) "
+        + "Enter-Stage 'privateValidation'; $validator}; "
+        + "RateGate={param($context,$ratePlan) Enter-Stage 'rateGate'}; "
+        + "SafeSummary={param($context,$validation,$game) Enter-Stage 'safeSummary'; "
+        + "[pscustomobject]@{status='passed'} }; "
+        + "Cleanup={param($context) $script:cleaned=$true; "
+        + "if(Test-Path -LiteralPath $env:APEXLAB_RUN_ROOT){"
+        + "Remove-Item -LiteralPath $env:APEXLAB_RUN_ROOT -Recurse -Force} }; "
+        + "Emit={param($message)} }; ";
 
     private sealed class PowerShellResult : IDisposable
     {

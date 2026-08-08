@@ -118,6 +118,563 @@ function Get-ApexLabPrivateValidationExitCode {
     return [int]$exitCodes[$Stage]
 }
 
+function Invoke-ApexLabPrivateF125Validation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $GameBuild,
+
+        [Parameter(Mandatory)]
+        [string] $RepositoryRoot,
+
+        [hashtable] $Dependencies
+    )
+
+    if ($null -eq $Dependencies) {
+        $Dependencies = New-ApexLabProductionDependencies
+    }
+    $requiredDependencies = @(
+        'Preflight', 'Probe', 'ProbeEvaluation', 'Capture',
+        'CaptureSelection', 'PrivateValidation', 'RateGate',
+        'SafeSummary', 'Cleanup', 'Emit')
+    foreach ($name in $requiredDependencies) {
+        if (!$Dependencies.ContainsKey($name) `
+            -or $Dependencies[$name] -isnot [scriptblock]) {
+            throw "The private validation dependency set is incomplete."
+        }
+    }
+
+    $context = $null
+    try {
+        [void](& $Dependencies.Emit 'stage=preflight')
+        $context = Invoke-ApexLabPrivateValidationStage `
+            -Stage 'preflight' `
+            -Action {
+                param($game, $root, $preflight)
+                Assert-ApexLabGameBuild -GameBuild $game
+                if (![IO.Path]::IsPathRooted($root)) {
+                    throw "The repository root must be absolute."
+                }
+                & $preflight $game ([IO.Path]::GetFullPath($root))
+            } `
+            -Arguments @(
+                $GameBuild, $RepositoryRoot, $Dependencies.Preflight)
+        [void](& $Dependencies.Emit 'stage=probe')
+        $probePath = Invoke-ApexLabPrivateValidationStage `
+            -Stage 'probe' `
+            -Action $Dependencies.Probe `
+            -Arguments @($context)
+        [void](& $Dependencies.Emit 'stage=probeEvaluation')
+        $probePlan = Invoke-ApexLabPrivateValidationStage `
+            -Stage 'probeEvaluation' `
+            -Action $Dependencies.ProbeEvaluation `
+            -Arguments @($probePath)
+        [void](& $Dependencies.Emit 'stage=capture')
+        $capture = Invoke-ApexLabPrivateValidationStage `
+            -Stage 'capture' `
+            -Action $Dependencies.Capture `
+            -Arguments @($context)
+        [void](& $Dependencies.Emit 'stage=captureSelection')
+        $captureId = Invoke-ApexLabPrivateValidationStage `
+            -Stage 'captureSelection' `
+            -Action $Dependencies.CaptureSelection `
+            -Arguments @($capture)
+        [void](& $Dependencies.Emit 'stage=privateValidation')
+        $validatorJson = Invoke-ApexLabPrivateValidationStage `
+            -Stage 'privateValidation' `
+            -Action $Dependencies.PrivateValidation `
+            -Arguments @($context, $captureId, $probePath)
+        $validation = Invoke-ApexLabPrivateValidationStage `
+            -Stage 'privateValidation' `
+            -Action { param($json) Assert-ApexLabSafeValidatorJson -Json $json } `
+            -Arguments @($validatorJson)
+        $ratePlan = Get-ApexLabRateGatePlan `
+            -Peak $probePlan.MeasuredPeakDatagramsPerSecond
+        [void](& $Dependencies.Emit 'stage=rateGate')
+        [void](Invoke-ApexLabPrivateValidationStage `
+            -Stage 'rateGate' `
+            -Action $Dependencies.RateGate `
+            -Arguments @($context, $ratePlan))
+        [void](& $Dependencies.Emit 'stage=safeSummary')
+        $summary = Invoke-ApexLabPrivateValidationStage `
+            -Stage 'safeSummary' `
+            -Action $Dependencies.SafeSummary `
+            -Arguments @($context, $validation, $GameBuild)
+        return $summary
+    }
+    finally {
+        & $Dependencies.Cleanup $context
+    }
+}
+
+function New-ApexLabProductionDependencies {
+    return @{
+        Preflight = {
+            param($gameBuild, $repositoryRoot)
+            Invoke-ApexLabProductionPreflight `
+                -GameBuild $gameBuild `
+                -RepositoryRoot $repositoryRoot
+        }
+        Probe = {
+            param($context)
+            Invoke-ApexLabProductionProbe -Context $context
+        }
+        ProbeEvaluation = {
+            param($path)
+            Read-ApexLabPrivateProbePlan -Path $path
+        }
+        Capture = {
+            param($context)
+            Invoke-ApexLabProductionCapture -Context $context
+        }
+        CaptureSelection = {
+            param($capture)
+            Select-ApexLabNewCaptureId `
+                -Before $capture.Before `
+                -After $capture.After
+        }
+        PrivateValidation = {
+            param($context, $captureId, $probePath)
+            Invoke-ApexLabProductionPrivateValidation `
+                -Context $context `
+                -CaptureId $captureId `
+                -ProbePath $probePath
+        }
+        RateGate = {
+            param($context, $ratePlan)
+            Invoke-ApexLabProductionRateGate `
+                -Context $context `
+                -RatePlan $ratePlan
+        }
+        SafeSummary = {
+            param($context, $validation, $gameBuild)
+            Write-ApexLabProductionSafeSummary `
+                -Context $context `
+                -Validation $validation `
+                -GameBuild $gameBuild
+        }
+        Cleanup = {
+            param($context)
+            if ($null -ne $context -and $null -ne $context.RunRoot) {
+                Remove-ApexLabPrivateRunRoot `
+                    -RunRoot $context.RunRoot `
+                    -PrivateRoot $context.PrivateRoot
+            }
+        }
+        Emit = {
+            param($message)
+            [Console]::Out.WriteLine($message)
+        }
+    }
+}
+
+function Invoke-ApexLabProductionPreflight {
+    param(
+        [Parameter(Mandatory)] [string] $GameBuild,
+        [Parameter(Mandatory)] [string] $RepositoryRoot
+    )
+
+    if ($env:OS -cne 'Windows_NT' `
+        -or [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        throw "The private validation requires Windows and local application data."
+    }
+    Assert-ApexLabGameBuild -GameBuild $GameBuild
+    $repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
+    if (![IO.Directory]::Exists($repositoryRoot)) {
+        throw "The repository root is unavailable."
+    }
+
+    $dataRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'ApexLab'))
+    $privateRoot = [IO.Path]::GetFullPath((
+        Join-Path $dataRoot 'private-validation'))
+    [void][IO.Directory]::CreateDirectory($privateRoot)
+    Assert-ApexLabNoReparsePath `
+        -Anchor ([IO.Path]::GetFullPath($env:LOCALAPPDATA)) `
+        -Target $privateRoot
+    $runRoot = Join-Path $privateRoot ("run-{0}" -f [guid]::NewGuid().ToString('N'))
+    [void][IO.Directory]::CreateDirectory($runRoot)
+    try {
+        Assert-ApexLabNoReparsePath -Anchor $privateRoot -Target $runRoot
+        $head = Invoke-ApexLabPrivateTextCommand `
+            -RunRoot $runRoot `
+            -FilePath 'git.exe' `
+            -Arguments @('-C', $repositoryRoot, 'rev-parse', '--verify', 'HEAD')
+        $head = $head.Trim()
+        if ($head -notmatch '^[0-9a-f]{40}$') {
+            throw "The repository commit is unresolved."
+        }
+        [void](Invoke-ApexLabPrivateTextCommand `
+            -RunRoot $runRoot `
+            -FilePath 'git.exe' `
+            -Arguments @(
+                '-C', $repositoryRoot, 'symbolic-ref', '--quiet', '--short',
+                'HEAD'))
+        $status = Invoke-ApexLabPrivateTextCommand `
+            -RunRoot $runRoot `
+            -FilePath 'git.exe' `
+            -Arguments @(
+                '-C', $repositoryRoot, 'status', '--porcelain=v1',
+                '--untracked-files=no')
+        if (![string]::IsNullOrWhiteSpace($status)) {
+            throw "The tracked worktree must be clean."
+        }
+        $sdk = (Invoke-ApexLabPrivateTextCommand `
+            -RunRoot $runRoot `
+            -FilePath 'dotnet.exe' `
+            -Arguments @('--version')).Trim()
+        if ($sdk -cne '10.0.302') {
+            throw "The required .NET SDK is unavailable."
+        }
+        if (@(Get-Process -Name 'ApexLab' -ErrorAction SilentlyContinue).Count -ne 0) {
+            throw "ApexLab must be closed before validation."
+        }
+        Assert-ApexLabLoopbackPortAvailable
+
+        [void](Invoke-ApexLabPrivateTextCommand `
+            -RunRoot $runRoot `
+            -FilePath 'powershell.exe' `
+            -Arguments @(
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                (Join-Path $repositoryRoot 'scripts/Verify.ps1')))
+        $applicationPath = Join-Path $repositoryRoot (
+            'src/ApexLab.App/bin/Release/net10.0-windows/ApexLab.exe')
+        $replayPath = Join-Path $repositoryRoot (
+            'tools/ApexLab.Replay/bin/Release/net10.0-windows/ApexLab.Replay.exe')
+        $soakPath = Join-Path $repositoryRoot 'scripts/CaptureSoak.ps1'
+        foreach ($path in @($applicationPath, $replayPath, $soakPath)) {
+            if (![IO.File]::Exists($path)) {
+                throw "A required Release validation file is unavailable."
+            }
+        }
+        $versionText = [IO.File]::ReadAllText((
+            Join-Path $repositoryRoot 'Version.props'))
+        $versionMatch = [regex]::Match(
+            $versionText,
+            '<VersionPrefix>(\d+\.\d+\.\d+)</VersionPrefix>')
+        if (!$versionMatch.Success) {
+            throw "The application version is invalid."
+        }
+
+        return [pscustomobject][ordered]@{
+            RepositoryRoot = $repositoryRoot
+            RepositoryHead = $head
+            DataRoot = $dataRoot
+            CapturesRoot = (Join-Path $dataRoot 'captures')
+            PrivateRoot = $privateRoot
+            RunRoot = $runRoot
+            ApplicationPath = $applicationPath
+            ReplayPath = $replayPath
+            SoakPath = $soakPath
+            ApplicationVersion = $versionMatch.Groups[1].Value
+        }
+    }
+    catch {
+        Remove-ApexLabPrivateRunRoot `
+            -RunRoot $runRoot `
+            -PrivateRoot $privateRoot
+        throw
+    }
+}
+
+function Invoke-ApexLabProductionProbe {
+    param([Parameter(Mandatory)] $Context)
+
+    [Console]::Out.WriteLine(
+        'Configure F1 25 UDP v3 at 127.0.0.1:20777 and drive offline Time Trial for 30 seconds.')
+    $probePath = Join-Path $Context.RunRoot 'probe.json'
+    $errorPath = Join-Path $Context.RunRoot 'probe.stderr'
+    $result = Invoke-ApexLabCapturedProcess `
+        -FilePath $Context.ReplayPath `
+        -ArgumentList @('probe', '--duration-seconds', '30') `
+        -StandardOutputPath $probePath `
+        -StandardErrorPath $errorPath
+    if ($result.ExitCode -ne 0) {
+        throw "The private probe failed."
+    }
+    return $probePath
+}
+
+function Invoke-ApexLabProductionCapture {
+    param([Parameter(Mandatory)] $Context)
+
+    $before = Get-ApexLabFinalManifestLeafNames `
+        -CapturesRoot $Context.CapturesRoot
+    [Console]::Out.WriteLine(
+        'Arm and stop exactly one capture in ApexLab, then close ApexLab.')
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Context.ApplicationPath
+    $startInfo.UseShellExecute = $true
+    $process = [Diagnostics.Process]::Start($startInfo)
+    if ($null -eq $process) {
+        throw "ApexLab could not be started."
+    }
+    try {
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) {
+            throw "ApexLab closed with a failure."
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
+    $after = Get-ApexLabFinalManifestLeafNames `
+        -CapturesRoot $Context.CapturesRoot
+    return [pscustomobject][ordered]@{
+        Before = @($before)
+        After = @($after)
+    }
+}
+
+function Invoke-ApexLabProductionPrivateValidation {
+    param(
+        [Parameter(Mandatory)] $Context,
+        [Parameter(Mandatory)] [string] $CaptureId,
+        [Parameter(Mandatory)] [string] $ProbePath
+    )
+
+    $outputPath = Join-Path $Context.RunRoot 'validator.json'
+    $errorPath = Join-Path $Context.RunRoot 'validator.stderr'
+    $result = Invoke-ApexLabCapturedProcess `
+        -FilePath $Context.ReplayPath `
+        -ArgumentList @(
+            'validate', '--data-root', $Context.DataRoot,
+            '--capture-id', $CaptureId, '--probe-report', $ProbePath) `
+        -StandardOutputPath $outputPath `
+        -StandardErrorPath $errorPath
+    if ($result.ExitCode -ne 0) {
+        $exception = [InvalidOperationException]::new(
+            "The private evidence validator failed.")
+        $exception.Data['ApexLabDiagnosticExitCode'] = $result.ExitCode
+        throw $exception
+    }
+    return [IO.File]::ReadAllText($outputPath)
+}
+
+function Invoke-ApexLabProductionRateGate {
+    param(
+        [Parameter(Mandatory)] $Context,
+        [Parameter(Mandatory)] $RatePlan
+    )
+
+    $outputPath = Join-Path $Context.RunRoot 'rate-gate.stdout'
+    $errorPath = Join-Path $Context.RunRoot 'rate-gate.stderr'
+    $result = Invoke-ApexLabCapturedProcess `
+        -FilePath 'powershell.exe' `
+        -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+            $Context.SoakPath,
+            '-DatagramCount', [string]$RatePlan.DatagramCount,
+            '-TargetDatagramsPerSecond', [string]$RatePlan.TargetRate,
+            '-MeasuredRealPeakDatagramsPerSecond',
+            [string]$RatePlan.MinimumRate / 2,
+            '-MinimumObservedFractionPermille', '950',
+            '-Configuration', 'Release') `
+        -StandardOutputPath $outputPath `
+        -StandardErrorPath $errorPath
+    if ($result.ExitCode -ne 0) {
+        throw "The measured private rate gate failed."
+    }
+}
+
+function Write-ApexLabProductionSafeSummary {
+    param(
+        [Parameter(Mandatory)] $Context,
+        [Parameter(Mandatory)] $Validation,
+        [Parameter(Mandatory)] [string] $GameBuild
+    )
+
+    $head = (Invoke-ApexLabPrivateTextCommand `
+        -RunRoot $Context.RunRoot `
+        -FilePath 'git.exe' `
+        -Arguments @(
+            '-C', $Context.RepositoryRoot, 'rev-parse', '--verify', 'HEAD')).Trim()
+    if ($head -cne $Context.RepositoryHead) {
+        throw "The repository changed during private validation."
+    }
+    $summary = New-ApexLabSafeSummary `
+        -GameBuild $GameBuild `
+        -AdapterId $Validation.protocolId `
+        -ApplicationVersion $Context.ApplicationVersion `
+        -ValidationDate ([datetime]::UtcNow.ToString(
+            'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture))
+    $json = $summary | ConvertTo-Json -Compress
+    $temporaryPath = Join-Path $Context.PrivateRoot (
+        "safe-{0}.tmp" -f [guid]::NewGuid().ToString('N'))
+    $latestPath = Join-Path $Context.PrivateRoot 'latest-safe.json'
+    [IO.File]::WriteAllText(
+        $temporaryPath,
+        $json,
+        [Text.UTF8Encoding]::new($false))
+    try {
+        if ([IO.File]::Exists($latestPath)) {
+            [IO.File]::Replace($temporaryPath, $latestPath, $null)
+        }
+        else {
+            [IO.File]::Move($temporaryPath, $latestPath)
+        }
+    }
+    finally {
+        if ([IO.File]::Exists($temporaryPath)) {
+            [IO.File]::Delete($temporaryPath)
+        }
+    }
+    return $summary
+}
+
+function Invoke-ApexLabPrivateTextCommand {
+    param(
+        [Parameter(Mandatory)] [string] $RunRoot,
+        [Parameter(Mandatory)] [string] $FilePath,
+        [Parameter(Mandatory)] [string[]] $Arguments
+    )
+
+    $token = [guid]::NewGuid().ToString('N')
+    $outputPath = Join-Path $RunRoot ("command-{0}.stdout" -f $token)
+    $errorPath = Join-Path $RunRoot ("command-{0}.stderr" -f $token)
+    $result = Invoke-ApexLabCapturedProcess `
+        -FilePath $FilePath `
+        -ArgumentList $Arguments `
+        -StandardOutputPath $outputPath `
+        -StandardErrorPath $errorPath
+    if ($result.ExitCode -ne 0) {
+        throw "A private validation child process failed."
+    }
+    return [IO.File]::ReadAllText($outputPath)
+}
+
+function Get-ApexLabFinalManifestLeafNames {
+    param([Parameter(Mandatory)] [string] $CapturesRoot)
+
+    if (![IO.Directory]::Exists($CapturesRoot)) {
+        return @()
+    }
+    return @(Get-ChildItem `
+        -LiteralPath $CapturesRoot `
+        -File `
+        -Filter '*.apxraw.json' | ForEach-Object { $_.Name })
+}
+
+function Assert-ApexLabLoopbackPortAvailable {
+    $client = [Net.Sockets.UdpClient]::new()
+    try {
+        $client.Client.ExclusiveAddressUse = $true
+        $client.Client.Bind([Net.IPEndPoint]::new(
+            [Net.IPAddress]::Loopback,
+            20777))
+    }
+    catch {
+        throw "UDP loopback port 20777 is unavailable."
+    }
+    finally {
+        $client.Dispose()
+    }
+}
+
+function Assert-ApexLabNoReparsePath {
+    param(
+        [Parameter(Mandatory)] [string] $Anchor,
+        [Parameter(Mandatory)] [string] $Target
+    )
+
+    $anchor = [IO.Path]::GetFullPath($Anchor).TrimEnd('\')
+    $target = [IO.Path]::GetFullPath($Target).TrimEnd('\')
+    if (!$target.StartsWith(
+        "$anchor\",
+        [StringComparison]::OrdinalIgnoreCase)) {
+        throw "The private validation directory is outside its safe root."
+    }
+    $current = $anchor
+    $relative = $target.Substring($anchor.Length + 1)
+    foreach ($part in $relative.Split('\')) {
+        $current = Join-Path $current $part
+        $attributes = [IO.File]::GetAttributes($current)
+        if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "The private validation directory contains a reparse point."
+        }
+    }
+}
+
+function Remove-ApexLabPrivateRunRoot {
+    param(
+        [Parameter(Mandatory)] [string] $RunRoot,
+        [Parameter(Mandatory)] [string] $PrivateRoot
+    )
+
+    $privateRoot = [IO.Path]::GetFullPath($PrivateRoot).TrimEnd('\')
+    $runRoot = [IO.Path]::GetFullPath($RunRoot).TrimEnd('\')
+    if ([IO.Path]::GetDirectoryName($runRoot) -cne $privateRoot `
+        -or [IO.Path]::GetFileName($runRoot) -notmatch '^run-[0-9a-f]{32}$') {
+        throw "The private validation cleanup target is unsafe."
+    }
+    if ([IO.Directory]::Exists($runRoot)) {
+        Assert-ApexLabNoReparsePath -Anchor $privateRoot -Target $runRoot
+        Remove-Item -LiteralPath $runRoot -Recurse -Force
+    }
+}
+
+function Invoke-ApexLabPrivateValidationStage {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Stage,
+
+        [Parameter(Mandatory)]
+        [scriptblock] $Action,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]] $Arguments
+    )
+
+    try {
+        return & $Action @Arguments
+    }
+    catch {
+        $exception = [InvalidOperationException]::new(
+            "The ApexLab private validation stage failed.")
+        $exception.Data['ApexLabStage'] = $Stage
+        if ($_.Exception -is [OperationCanceledException]) {
+            $exception.Data['ApexLabExitCode'] =
+                Get-ApexLabPrivateValidationExitCode -Stage 'cancelled'
+            $exception.Data['ApexLabCorrection'] =
+                Get-ApexLabPrivateValidationCorrection -Stage 'cancelled'
+        }
+        else {
+            $exception.Data['ApexLabExitCode'] =
+                Get-ApexLabPrivateValidationExitCode -Stage $Stage
+            $exception.Data['ApexLabCorrection'] =
+                Get-ApexLabPrivateValidationCorrection -Stage $Stage
+        }
+        if ($_.Exception.Data.Contains('ApexLabDiagnosticExitCode')) {
+            $exception.Data['ApexLabDiagnosticExitCode'] =
+                $_.Exception.Data['ApexLabDiagnosticExitCode']
+        }
+        throw $exception
+    }
+}
+
+function Get-ApexLabPrivateValidationCorrection {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Stage
+    )
+
+    $corrections = @{
+        preflight = 'Resolve the preflight requirement, then run the command again.'
+        probe = 'Check the F1 25 UDP settings, then repeat the probe.'
+        probeEvaluation = 'Drive offline with base F1 25 UDP v3 traffic, then retry.'
+        capture = 'Complete one capture and close ApexLab, then retry.'
+        captureSelection = 'Keep exactly one new completed capture, then retry.'
+        privateValidation = 'Create a new complete capture after a passing probe.'
+        rateGate = 'Close other heavy applications, then repeat the validation.'
+        safeSummary = 'Keep the repository unchanged and retry summary creation.'
+        cancelled = 'The validation was cancelled; run it again when ready.'
+    }
+    if (!$corrections.ContainsKey($Stage)) {
+        throw "The private validation stage is invalid."
+    }
+    return [string]$corrections[$Stage]
+}
+
 function Assert-ApexLabSafeValidatorJson {
     [CmdletBinding()]
     param(
@@ -586,6 +1143,7 @@ Export-ModuleMember -Function @(
     'Select-ApexLabNewCaptureId',
     'Get-ApexLabRateGatePlan',
     'Get-ApexLabPrivateValidationExitCode',
+    'Invoke-ApexLabPrivateF125Validation',
     'Assert-ApexLabSafeValidatorJson',
     'New-ApexLabSafeSummary',
     'Invoke-ApexLabCapturedProcess',
