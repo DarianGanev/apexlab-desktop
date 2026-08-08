@@ -13,7 +13,7 @@
 - Work only in `C:\Users\ASUS\Desktop\diplomna\.worktrees\private-validation-assistant` on `feature/private-validation-assistant`; do not modify the release worktree.
 - Preserve the existing `replay` and `probe` command syntax and JSON contracts.
 - The public command remains exactly `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ValidatePrivateF125.ps1 -GameBuild "<build shown by F1 25>"`.
-- Support Windows, the repository-pinned .NET SDK, base F1 25 protocol `f1-25-base-v3`, and loopback UDP `127.0.0.1:20777` only.
+- Support Windows, the repository-pinned .NET SDK, base F1 25 protocol `ea-f1-25-v3`, and loopback UDP `127.0.0.1:20777` only.
 - Do not add a NuGet or PowerShell dependency; in particular, do not require Pester.
 - Raw evidence stays under `%LOCALAPPDATA%\ApexLab\captures`; never upload, copy, rename, alter, or delete a user capture.
 - Never print or write to the safe report a capture ID, evidence hash, filesystem path, username, sender endpoint, session UID, payload, exact live peak, or exact derived rate threshold.
@@ -162,7 +162,7 @@ git commit -m "refactor(replay): expose typed deterministic execution"
 Build JSON through `ProbeJson.Serialize` so property names match production. The accepted report must satisfy these exact equations:
 
 ```text
-source.datagramsObserved = source.sourceEnqueued + source.sourceDroppedFull + source.sourceRejectedOversized + source.socketErrors
+source.datagramsObserved = source.sourceEnqueued + source.sourceDroppedFull + source.sourceRejectedOversized
 source.sourceEnqueued = classification.sourceDequeued + classification.classifierAbandonedOnTermination
 classification.sourceDequeued = sum(all classification outcome counters except sourceDequeued and classifierAbandonedOnTermination)
 ```
@@ -201,7 +201,7 @@ private static readonly JsonSerializerOptions JsonOptions = new()
 
 - [ ] **Step 4: Implement exact acceptance rules**
 
-Require schema 1, status `success`, protocol `f1-25-base-v3`, positive compatible traffic, positive peak, zero source loss/errors, zero malformed/unsupported/unknown/invalid/unexpected classifications, and zero sequence/timestamp/session/frame regressions. Permit `ExcludedPrivacyPacket > 0` in the live probe only. For every packet shape and descriptor, resolve the packet ID in `F125PacketDescriptorCatalog` and require exact packet version and datagram length. Require descriptor counts to equal packet-shape counts per key and require the total descriptor count to equal `SourceDequeued`.
+Require schema 1, status `success`, protocol `ea-f1-25-v3`, positive compatible traffic, positive peak, zero source loss/errors, zero malformed/unsupported/unknown/invalid/unexpected classifications, and zero sequence/timestamp/session/frame regressions. Permit `ExcludedPrivacyPacket > 0` in the live probe only. For every packet shape and descriptor, resolve the packet ID in `F125PacketDescriptorCatalog` and require exact packet version and datagram length. Require descriptor counts to equal packet-shape counts per key and require the total descriptor count to equal `SourceDequeued`.
 
 - [ ] **Step 5: Run focused and probe regression tests**
 

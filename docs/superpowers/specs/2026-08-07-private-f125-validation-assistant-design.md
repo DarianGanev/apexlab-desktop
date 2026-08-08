@@ -81,7 +81,7 @@ is no resumable private state in v0.2.
 
 The assistant accepts a live probe only when all of the following hold:
 
-- report schema and status are supported and the protocol is `f1-25-base-v3`;
+- report schema and status are supported and the protocol is `ea-f1-25-v3`;
 - source and classifier accounting equations are exact;
 - compatible traffic and a positive peak rate exist;
 - there are no full-channel drops, oversized rejects, socket errors, malformed headers, wrong
