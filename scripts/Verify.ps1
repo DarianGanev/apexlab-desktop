@@ -122,6 +122,97 @@ function Assert-NoRawEvidenceFiles {
     }
 }
 
+function Assert-PrivateValidationVerificationRecord {
+    param([Parameter(Mandatory)][string] $Path)
+
+    if (![IO.File]::Exists($Path)) {
+        throw "Private validation verification record is missing."
+    }
+    $text = [IO.File]::ReadAllText($Path)
+    $matches = [regex]::Matches(
+        $text,
+        '(?ms)```json\s*(\{.*?\})\s*```')
+    if ($matches.Count -eq 0) { return }
+    if ($matches.Count -ne 1) {
+        throw "Private validation record is invalid."
+    }
+    try {
+        $record = $matches[0].Groups[1].Value |
+            ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "Private validation record is invalid."
+    }
+    if ($null -eq $record -or $record -isnot [pscustomobject]) {
+        throw "Private validation record is invalid."
+    }
+
+    $forbidden = @(
+        'captureId', 'sha256', 'path', 'sender', 'sessionUid', 'payload',
+        'measuredPeak', 'minimumRate', 'targetRate')
+    foreach ($propertyName in @(Get-JsonPropertyNamesRecursive -Value $record)) {
+        if ($forbidden -contains $propertyName) {
+            throw "Private validation record contains a forbidden property."
+        }
+    }
+    $expected = @(
+        'schemaVersion', 'status', 'validationDate', 'gameBuild',
+        'adapterId', 'applicationVersion', 'offlineCapture',
+        'manifestIntegrity', 'deterministicReplay',
+        'sequenceGapPreservation', 'zeroPrivacyExcludedEvidence',
+        'probeAssumptions', 'rateGate2x', 'conclusion')
+    $actual = @($record.PSObject.Properties.Name)
+    if ($actual.Count -ne $expected.Count) {
+        throw "Private validation record is invalid."
+    }
+    foreach ($propertyName in $expected) {
+        if ($actual -cnotcontains $propertyName) {
+            throw "Private validation record is invalid."
+        }
+    }
+    if ($record.schemaVersion -isnot [int] `
+        -or $record.schemaVersion -ne 1 `
+        -or $record.status -cne 'passed' `
+        -or $record.adapterId -cne 'ea-f1-25-v3' `
+        -or $record.applicationVersion -notmatch '^\d+\.\d+\.\d+$' `
+        -or $record.validationDate -notmatch '^\d{4}-\d{2}-\d{2}$' `
+        -or $record.conclusion -cne 'PASS' `
+        -or [string]::IsNullOrWhiteSpace($record.gameBuild) `
+        -or $record.gameBuild.Length -gt 80) {
+        throw "Private validation record is invalid."
+    }
+    $parsedDate = [datetime]::MinValue
+    if (![datetime]::TryParseExact(
+        $record.validationDate,
+        'yyyy-MM-dd',
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::None,
+        [ref]$parsedDate)) {
+        throw "Private validation record is invalid."
+    }
+    foreach ($propertyName in $expected[6..12]) {
+        if ($record.$propertyName -isnot [bool] -or !$record.$propertyName) {
+            throw "Private validation record is invalid."
+        }
+    }
+}
+
+function Get-JsonPropertyNamesRecursive {
+    param($Value)
+
+    if ($Value -is [pscustomobject]) {
+        foreach ($property in $Value.PSObject.Properties) {
+            $property.Name
+            Get-JsonPropertyNamesRecursive -Value $property.Value
+        }
+    }
+    elseif ($Value -is [Collections.IEnumerable] -and $Value -isnot [string]) {
+        foreach ($item in $Value) {
+            Get-JsonPropertyNamesRecursive -Value $item
+        }
+    }
+}
+
 function Assert-FixtureSizeBudget {
     param(
         [Parameter(Mandatory)][string] $Root,
@@ -246,6 +337,35 @@ function Test-RepositoryCheckFailurePaths {
             Assert-NoRawEvidenceFiles -RelativePaths @("private-validation/aggregate.json")
         }
 
+        $safePrivateRecord = @'
+```json
+{"schemaVersion":1,"status":"passed","validationDate":"2026-08-08","gameBuild":"1.2.3 test","adapterId":"ea-f1-25-v3","applicationVersion":"0.1.0","offlineCapture":true,"manifestIntegrity":true,"deterministicReplay":true,"sequenceGapPreservation":true,"zeroPrivacyExcludedEvidence":true,"probeAssumptions":true,"rateGate2x":true,"conclusion":"PASS"}
+```
+'@
+        $safePrivateRecordPath = Join-Path $fixtureRoot "safe-private.md"
+        [IO.File]::WriteAllText($safePrivateRecordPath, $safePrivateRecord)
+        Assert-PrivateValidationVerificationRecord `
+            -Path $safePrivateRecordPath
+        foreach ($forbiddenProperty in @(
+            'captureId', 'sha256', 'path', 'sender', 'sessionUid',
+            'payload', 'measuredPeak', 'minimumRate', 'targetRate')) {
+            $unsafePrivateRecordPath = Join-Path $fixtureRoot (
+                "unsafe-private-{0}.md" -f $forbiddenProperty)
+            $unsafePrivateRecord = $safePrivateRecord.Replace(
+                '"conclusion":"PASS"',
+                ('"conclusion":"PASS","{0}":"private"' -f $forbiddenProperty))
+            [IO.File]::WriteAllText(
+                $unsafePrivateRecordPath,
+                $unsafePrivateRecord)
+            Assert-CheckRejects `
+                -Name ("private validation property " + $forbiddenProperty) `
+                -ExpectedMessagePattern '^Private validation record contains a forbidden property' `
+                -Check {
+                Assert-PrivateValidationVerificationRecord `
+                    -Path $unsafePrivateRecordPath
+            }
+        }
+
         $largeFixtureDirectory = Join-Path $fixtureRoot "tests\Fixtures"
         [IO.Directory]::CreateDirectory($largeFixtureDirectory) | Out-Null
         $largeFixture = Join-Path $largeFixtureDirectory "large.bin"
@@ -319,6 +439,8 @@ try {
     Assert-NoSecretPatterns -Root $repositoryRoot -RelativePaths $trackedFiles
     Assert-NoPersonalDataDirectories -RelativePaths $trackedFiles
     Assert-NoRawEvidenceFiles -RelativePaths $trackedFiles
+    Assert-PrivateValidationVerificationRecord `
+        -Path (Join-Path $repositoryRoot 'docs/verification/v0.2.0-private-f125.md')
     Assert-FixtureSizeBudget `
         -Root $repositoryRoot `
         -RelativePaths $trackedFiles `

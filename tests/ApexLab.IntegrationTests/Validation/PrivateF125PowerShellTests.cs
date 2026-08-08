@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using ApexLab.Application.Capture;
 using ApexLab.Application.Storage;
 using ApexLab.Persistence.Raw;
@@ -418,10 +419,20 @@ public sealed class PrivateF125PowerShellTests
     [TestMethod]
     public async Task PublicValidationScriptExposesOnlyTheBoundedGameBuildInput()
     {
+        var repositoryRoot = FindRepositoryRoot();
         var scriptPath = Path.Combine(
-            FindRepositoryRoot(),
+            repositoryRoot,
             "scripts",
             "ValidatePrivateF125.ps1");
+        var readme = await File.ReadAllTextAsync(Path.Combine(
+            repositoryRoot,
+            "README.md"));
+        var documentedCommand = Regex.Match(
+            readme,
+            "(?m)^powershell .*ValidatePrivateF125\\.ps1.*$");
+        Assert.IsTrue(documentedCommand.Success);
+        Assert.Contains("-GameBuild", documentedCommand.Value);
+        Assert.DoesNotContain("-Dependencies", documentedCommand.Value);
         using var result = await InvokeModuleAsync(
             "$command=Get-Command -Name $env:APEXLAB_PUBLIC_SCRIPT; "
             + "$parameter=$command.Parameters['GameBuild']; "
