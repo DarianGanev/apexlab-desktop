@@ -1,7 +1,13 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Net;
 using System.Text.Json;
+using ApexLab.Application.Capture;
+using ApexLab.Application.Storage;
+using ApexLab.Persistence.Raw;
 using ApexLab.Protocols.F125;
 using ApexLab.Replay.Probe;
+using ApexLab.Telemetry.Abstractions.Capture;
 
 namespace ApexLab.IntegrationTests.Validation;
 
@@ -474,6 +480,126 @@ public sealed class PrivateF125PowerShellTests
         }
     }
 
+    [TestMethod]
+    public async Task SyntheticWorkflowUsesRealEvidenceAndValidatorEndToEnd()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var temporary = Path.Combine(
+            Path.GetTempPath(),
+            $"apexlab synthetic $ (proof) {Guid.NewGuid():N}");
+        var stagingRoot = Path.Combine(temporary, "staging evidence");
+        var dataRoot = Path.Combine(temporary, "workflow data");
+        var diagnosticsRoot = Path.Combine(temporary, "private diagnostics");
+        Directory.CreateDirectory(stagingRoot);
+        Directory.CreateDirectory(dataRoot);
+        Directory.CreateDirectory(diagnosticsRoot);
+        var completion = await CreateSyntheticEvidenceAsync(
+            ApplicationPaths.FromRoot(stagingRoot));
+        var probePath = Path.Combine(temporary, "accepted probe.json");
+        await File.WriteAllTextAsync(probePath, CreateAcceptedProbeJson());
+        var fixturePath = Path.Combine(
+            repositoryRoot,
+            "tests",
+            "ApexLab.IntegrationTests",
+            "Validation",
+            "Fixtures",
+            "InvokePrivateF125SyntheticWorkflow.ps1");
+        var replayPath = Path.Combine(
+            repositoryRoot,
+            "tools",
+            "ApexLab.Replay",
+            "bin",
+            "Release",
+            "net10.0-windows",
+            "ApexLab.Replay.exe");
+        try
+        {
+            var startInfo = new ProcessStartInfo("powershell.exe")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            string[] arguments =
+            [
+                "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                fixturePath,
+                "-RepositoryRoot", repositoryRoot,
+                "-StagingDataRoot", stagingRoot,
+                "-DataRoot", dataRoot,
+                "-ProbeSourcePath", probePath,
+                "-ReplayPath", replayPath,
+                "-DiagnosticsRoot", diagnosticsRoot,
+                "-GameBuild", "1.2.3;$(Set-Content synthetic-pwned.txt bad)",
+            ];
+            foreach (var argument in arguments)
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+            using var process = Process.Start(startInfo);
+            Assert.IsNotNull(process);
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+
+            Assert.AreEqual(0, process.ExitCode, stderr);
+            Assert.AreEqual(string.Empty, stderr);
+            using var document = JsonDocument.Parse(stdout);
+            CollectionAssert.AreEqual(
+                new[]
+                {
+                    "preflight", "probe", "probeEvaluation", "capture",
+                    "captureSelection", "privateValidation", "rateGate",
+                    "safeSummary",
+                },
+                document.RootElement.GetProperty("Stages")
+                    .EnumerateArray()
+                    .Select(value => value.GetString())
+                    .ToArray());
+            Assert.AreEqual(
+                "passed",
+                document.RootElement.GetProperty("Summary")
+                    .GetProperty("status")
+                    .GetString());
+            Assert.DoesNotContain(completion.CaptureId.Value, stdout);
+            Assert.DoesNotContain(completion.Sha256, stdout);
+            Assert.DoesNotContain(stagingRoot, stdout);
+            Assert.DoesNotContain(dataRoot, stdout);
+            Assert.IsFalse(Directory.EnumerateDirectories(
+                Path.Combine(dataRoot, "private-validation"),
+                "run-*",
+                SearchOption.TopDirectoryOnly).Any());
+            Assert.IsTrue(File.Exists(Path.Combine(
+                dataRoot,
+                "private-validation",
+                "latest-safe.json")));
+            var soakArguments = await File.ReadAllTextAsync(Path.Combine(
+                diagnosticsRoot,
+                "soak-arguments.json"));
+            Assert.Contains("\"DatagramCount\":10000", soakArguments);
+            Assert.Contains("\"TargetRate\":7", soakArguments);
+            Assert.Contains("\"MeasuredPeak\":3", soakArguments);
+            Assert.IsTrue(File.Exists(Path.Combine(
+                stagingRoot,
+                "captures",
+                $"{completion.CaptureId.Value}.apxraw")));
+            Assert.IsTrue(File.Exists(Path.Combine(
+                stagingRoot,
+                "captures",
+                $"{completion.CaptureId.Value}.apxraw.json")));
+            Assert.IsFalse(File.Exists(Path.Combine(
+                repositoryRoot,
+                "synthetic-pwned.txt")));
+        }
+        finally
+        {
+            Directory.Delete(temporary, recursive: true);
+        }
+    }
+
     private static async Task<PowerShellResult> InvokeModuleAsync(
         string body,
         IReadOnlyDictionary<string, string>? environment = null)
@@ -568,9 +694,68 @@ public sealed class PrivateF125PowerShellTests
             [new ProbePacketShapeReport(0, 1, 1_349, 3)],
             [new ProbeDescriptorReport(0, 1, 1_349, 3)],
             [new ProbeRateBucketReport(0, 3)],
-            new ProbeSequenceReport(0, 0, 0, 0),
+            new ProbeSequenceReport(2, 0, 0, 0),
             new ProbeHeaderReport(1, 0, 0, 0, 0, 0),
             new ProbePlayerIndexReport(3, 3, null, null, 3)));
+
+    private static async Task<RawEvidenceCompletion>
+        CreateSyntheticEvidenceAsync(ApplicationPaths paths)
+    {
+        await using var writer = await RawEvidenceWriter.CreateAsync(
+            paths,
+            RawEvidenceProtocolId.Parse(F125Protocol.Id),
+            new RawEvidenceLimits(minimumFreeSpaceBytes: 0));
+        var payload = CreateSyntheticMotionPacket();
+        var sender = new DatagramSender(IPAddress.Loopback, 20_777);
+        var receivedAt = new DateTimeOffset(
+            2026,
+            8,
+            8,
+            12,
+            0,
+            0,
+            TimeSpan.Zero);
+        long[] sequences = [1, 2, 5];
+        for (var index = 0; index < sequences.Length; index++)
+        {
+            await writer.WriteAsync(DatagramEnvelope.CopyFrom(
+                sequences[index],
+                100 + index,
+                receivedAt.AddMilliseconds(index),
+                sender,
+                payload));
+        }
+
+        return await writer.FinalizeAsync();
+    }
+
+    private static byte[] CreateSyntheticMotionPacket()
+    {
+        var packet = new byte[1_349];
+        BinaryPrimitives.WriteUInt16LittleEndian(
+            packet,
+            F125Protocol.PacketFormat);
+        packet[2] = F125Protocol.GameYear;
+        packet[3] = 1;
+        packet[4] = 7;
+        packet[5] = 1;
+        packet[6] = 0;
+        BinaryPrimitives.WriteUInt64LittleEndian(
+            packet.AsSpan(7),
+            0x0123456789ABCDEFUL);
+        BinaryPrimitives.WriteUInt32LittleEndian(
+            packet.AsSpan(15),
+            unchecked((uint)BitConverter.SingleToInt32Bits(12.5F)));
+        BinaryPrimitives.WriteUInt32LittleEndian(
+            packet.AsSpan(19),
+            0x10203040U);
+        BinaryPrimitives.WriteUInt32LittleEndian(
+            packet.AsSpan(23),
+            0x50607080U);
+        packet[27] = 3;
+        packet[28] = byte.MaxValue;
+        return packet;
+    }
 
     private static string WorkflowDependencyScript() =>
         "$script:stages=[Collections.Generic.List[string]]::new(); "
