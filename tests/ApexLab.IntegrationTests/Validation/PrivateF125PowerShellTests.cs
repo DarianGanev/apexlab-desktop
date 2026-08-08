@@ -68,13 +68,20 @@ public sealed class PrivateF125PowerShellTests
             $"apexlab-rate-timeout-{Guid.NewGuid():N}");
         Directory.CreateDirectory(temporary);
         var soakPath = Path.Combine(temporary, "slow-soak.ps1");
+        var receivedDotNetPath = Path.Combine(temporary, "dotnet-path.txt");
+        var dotNetPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "dotnet",
+            "dotnet.exe");
         await File.WriteAllTextAsync(
             soakPath,
             "param([int]$DatagramCount,"
             + "[int]$TargetDatagramsPerSecond,"
             + "[int]$MeasuredRealPeakDatagramsPerSecond,"
             + "[int]$MinimumObservedFractionPermille,"
-            + "[string]$Configuration)\n"
+            + "[string]$Configuration,"
+            + "[string]$DotNetPath)\n"
+            + "[IO.File]::WriteAllText($env:APEXLAB_RECEIVED_DOTNET,$DotNetPath)\n"
             + "Start-Sleep -Seconds 3\n");
         try
         {
@@ -83,6 +90,7 @@ public sealed class PrivateF125PowerShellTests
                 + "SoakPath=$env:APEXLAB_SLOW_SOAK;"
                 + "SoakHash=$env:APEXLAB_SLOW_SOAK_HASH;"
                 + "RunRoot=$env:APEXLAB_RATE_RUN;"
+                + "DotNetPath=$env:APEXLAB_TRUSTED_DOTNET;"
                 + "PowerShellPath=$PSHOME+'\\powershell.exe'}; "
                 + "$plan=[pscustomobject]@{MinimumRate=2;TargetRate=3;"
                 + "DatagramCount=10000;TimeoutSeconds=1}; "
@@ -93,6 +101,8 @@ public sealed class PrivateF125PowerShellTests
                 {
                     ["APEXLAB_SLOW_SOAK"] = soakPath,
                     ["APEXLAB_RATE_RUN"] = temporary,
+                    ["APEXLAB_RECEIVED_DOTNET"] = receivedDotNetPath,
+                    ["APEXLAB_TRUSTED_DOTNET"] = dotNetPath,
                     ["APEXLAB_SLOW_SOAK_HASH"] = Convert.ToHexString(
                         System.Security.Cryptography.SHA256.HashData(
                             await File.ReadAllBytesAsync(soakPath)))
@@ -103,6 +113,9 @@ public sealed class PrivateF125PowerShellTests
             StringAssert.Contains(
                 result.StandardError,
                 "captured process exceeded its bounded wait");
+            Assert.AreEqual(
+                dotNetPath,
+                await File.ReadAllTextAsync(receivedDotNetPath));
         }
         finally
         {
@@ -532,7 +545,7 @@ public sealed class PrivateF125PowerShellTests
     }
 
     [TestMethod]
-    public async Task ResolvesProductionToolsToAbsolutePathsOutsideTheRepository()
+    public async Task ResolvesTrustedToolsAndRejectsWritableSignedCopies()
     {
         var repositoryRoot = FindRepositoryRoot();
         using var result = await InvokeModuleAsync(
@@ -611,16 +624,106 @@ public sealed class PrivateF125PowerShellTests
 
             Assert.AreEqual(0, custom.ExitCode, custom.StandardError);
             using var customDocument = JsonDocument.Parse(custom.StandardOutput);
-            Assert.AreEqual(
+            Assert.AreNotEqual(
                 customGit,
                 customDocument.RootElement.GetProperty("GitPath").GetString());
-            Assert.AreEqual(
+            Assert.AreNotEqual(
                 customDotNet,
                 customDocument.RootElement.GetProperty("DotNetPath").GetString());
         }
         finally
         {
             Directory.Delete(customTools, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task PrivateChildScriptsNeverInvokeGitOrDotNetByBareName()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        using var result = await InvokeModuleAsync(
+            "$names=@(); foreach($path in @($env:APEXLAB_VERIFY,$env:APEXLAB_SOAK)){"
+            + "$tokens=$null;$errors=$null;"
+            + "$ast=[Management.Automation.Language.Parser]::ParseFile("
+            + "$path,[ref]$tokens,[ref]$errors);"
+            + "if($errors.Count -ne 0){throw 'PowerShell parse failed.'};"
+            + "$names += @($ast.FindAll({param($node) "
+            + "$node -is [Management.Automation.Language.CommandAst]},$true) | "
+            + "ForEach-Object {$_.GetCommandName()} | "
+            + "Where-Object {$_ -in @('git','dotnet')})};"
+            + "$names | ConvertTo-Json -Compress",
+            new Dictionary<string, string>
+            {
+                ["APEXLAB_VERIFY"] = Path.Combine(
+                    repositoryRoot,
+                    "scripts",
+                    "Verify.ps1"),
+                ["APEXLAB_SOAK"] = Path.Combine(
+                    repositoryRoot,
+                    "scripts",
+                    "CaptureSoak.ps1"),
+            });
+
+        Assert.AreEqual(0, result.ExitCode, result.StandardError);
+        Assert.AreEqual(string.Empty, result.StandardOutput);
+        var moduleText = await File.ReadAllTextAsync(Path.Combine(
+            repositoryRoot,
+            "scripts",
+            "PrivateF125Validation.psm1"));
+        StringAssert.Contains(moduleText, "'-GitPath', $tools.GitPath");
+        StringAssert.Contains(moduleText, "'-DotNetPath', $tools.DotNetPath");
+        StringAssert.Contains(moduleText, "'-DotNetPath', $Context.DotNetPath");
+    }
+
+    [TestMethod]
+    public async Task CaptureSoakIgnoresUntrustedToolsEarlierOnPath()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var temporary = Path.Combine(
+            Path.GetTempPath(),
+            $"apexlab-path-adversary-{Guid.NewGuid():N}");
+        var maliciousDirectory = Path.Combine(temporary, "malicious");
+        Directory.CreateDirectory(maliciousDirectory);
+        var maliciousMarker = Path.Combine(temporary, "malicious.txt");
+        var trustedMarker = Path.Combine(temporary, "trusted.txt");
+        var trustedDotNet = Path.Combine(temporary, "trusted-dotnet.cmd");
+        await File.WriteAllTextAsync(
+            Path.Combine(maliciousDirectory, "dotnet.cmd"),
+            $"@echo invoked>\"{maliciousMarker}\"\r\n@exit /b 99\r\n");
+        await File.WriteAllTextAsync(
+            Path.Combine(maliciousDirectory, "git.cmd"),
+            $"@echo invoked>\"{maliciousMarker}\"\r\n@exit /b 99\r\n");
+        await File.WriteAllTextAsync(
+            trustedDotNet,
+            $"@echo %1>>\"{trustedMarker}\"\r\n"
+            + "@if \"%1\"==\"test\" @echo {}>\"%APEXLAB_SOAK_SUMMARY_PATH%\"\r\n"
+            + "@exit /b 0\r\n");
+        try
+        {
+            using var result = await InvokeModuleAsync(
+                "& $env:APEXLAB_SOAK -DatagramCount 10000 "
+                + "-DotNetPath $env:APEXLAB_TRUSTED_DOTNET",
+                new Dictionary<string, string>
+                {
+                    ["APEXLAB_SOAK"] = Path.Combine(
+                        repositoryRoot,
+                        "scripts",
+                        "CaptureSoak.ps1"),
+                    ["APEXLAB_TRUSTED_DOTNET"] = trustedDotNet,
+                    ["PATH"] = maliciousDirectory + Path.PathSeparator
+                        + Environment.GetEnvironmentVariable("PATH"),
+                });
+
+            Assert.AreEqual(0, result.ExitCode, result.StandardError);
+            Assert.IsFalse(File.Exists(maliciousMarker));
+            var trustedCalls = await File.ReadAllLinesAsync(trustedMarker);
+            CollectionAssert.AreEqual(
+                new[] { "restore", "test" },
+                trustedCalls);
+        }
+        finally
+        {
+            Directory.Delete(temporary, recursive: true);
         }
     }
 

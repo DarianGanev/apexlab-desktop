@@ -13,7 +13,10 @@ param(
     [int] $MinimumObservedFractionPermille = 950,
 
     [ValidateSet("Debug", "Release")]
-    [string] $Configuration = "Release"
+    [string] $Configuration = "Release",
+
+    [ValidateNotNullOrEmpty()]
+    [string] $DotNetPath = "dotnet"
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,12 +62,12 @@ try {
     New-Item -ItemType Directory -Force -Path $resultsDirectory | Out-Null
     Remove-Item -LiteralPath $summaryPath -ErrorAction SilentlyContinue
 
-    & dotnet restore (Join-Path $repositoryRoot "ApexLab.slnx") --locked-mode
+    & $DotNetPath restore (Join-Path $repositoryRoot "ApexLab.slnx") --locked-mode
     if ($LASTEXITCODE -ne 0) {
         throw "Locked restore failed with exit code $LASTEXITCODE."
     }
 
-    & dotnet test $projectPath `
+    & $DotNetPath test $projectPath `
         --configuration $Configuration `
         --no-restore `
         --filter "TestCategory=Soak" `

@@ -342,7 +342,9 @@ function Invoke-ApexLabProductionPreflight {
             -FilePath $tools.PowerShellPath `
             -Arguments @(
                 '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-                (Join-Path $repositoryRoot 'scripts/Verify.ps1')))
+                (Join-Path $repositoryRoot 'scripts/Verify.ps1'),
+                '-GitPath', $tools.GitPath,
+                '-DotNetPath', $tools.DotNetPath))
         $applicationPath = Join-Path $repositoryRoot (
             'src/ApexLab.App/bin/Release/net10.0-windows/ApexLab.exe')
         $replayPath = Join-Path $repositoryRoot (
@@ -432,7 +434,9 @@ function Get-ApexLabTrustedExecutablePaths {
     }
     if (!(Test-ApexLabTrustedApplicationPublisher `
         -Path $paths.PowerShellPath `
-        -AllowedSignerSubjectPattern $powerShellSigner)) {
+        -AllowedSignerSubjectPattern $powerShellSigner) `
+        -or !(Test-ApexLabProtectedApplicationLocation `
+            -Path $paths.PowerShellPath)) {
         throw "A trusted validation executable is unavailable."
     }
     return [pscustomobject]$paths
@@ -469,7 +473,9 @@ function Resolve-ApexLabInstalledApplication {
                 -Root $CurrentRoot) `
             -and (Test-ApexLabTrustedApplicationPublisher `
                 -Path $candidate `
-                -AllowedSignerSubjectPattern $AllowedSignerSubjectPattern)) {
+                -AllowedSignerSubjectPattern $AllowedSignerSubjectPattern) `
+            -and (Test-ApexLabProtectedApplicationLocation `
+                -Path $candidate)) {
             return $candidate
         }
     }
@@ -490,6 +496,55 @@ function Test-ApexLabTrustedApplicationPublisher {
         -and $null -ne $signature.SignerCertificate `
         -and $signature.SignerCertificate.Subject `
             -match $AllowedSignerSubjectPattern
+}
+
+function Test-ApexLabProtectedApplicationLocation {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $trustedOwners = @(
+        'S-1-5-18',
+        'S-1-5-32-544',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    $trustedWriters = @($trustedOwners) + @('S-1-3-0')
+    $writeRights = [Security.AccessControl.FileSystemRights]::WriteData `
+        -bor [Security.AccessControl.FileSystemRights]::CreateDirectories `
+        -bor [Security.AccessControl.FileSystemRights]::AppendData `
+        -bor [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes `
+        -bor [Security.AccessControl.FileSystemRights]::WriteAttributes `
+        -bor [Security.AccessControl.FileSystemRights]::Delete `
+        -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles `
+        -bor [Security.AccessControl.FileSystemRights]::ChangePermissions `
+        -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($target in @($Path, [IO.Path]::GetDirectoryName($Path))) {
+        try {
+            $item = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                return $false
+            }
+            $acl = Get-Acl -LiteralPath $target -ErrorAction Stop
+            $owner = $acl.GetOwner(
+                [Security.Principal.SecurityIdentifier]).Value
+            if ($owner -notin $trustedOwners) {
+                return $false
+            }
+            $rules = $acl.GetAccessRules(
+                $true,
+                $true,
+                [Security.Principal.SecurityIdentifier])
+            foreach ($rule in $rules) {
+                if ($rule.AccessControlType `
+                    -eq [Security.AccessControl.AccessControlType]::Allow `
+                    -and $rule.IdentityReference.Value -notin $trustedWriters `
+                    -and ($rule.FileSystemRights -band $writeRights) -ne 0) {
+                    return $false
+                }
+            }
+        }
+        catch {
+            return $false
+        }
+    }
+    return $true
 }
 
 function Test-ApexLabPathWithinRoot {
@@ -621,7 +676,8 @@ function Invoke-ApexLabProductionRateGate {
             '-MeasuredRealPeakDatagramsPerSecond',
             [string]($RatePlan.MinimumRate / 2),
             '-MinimumObservedFractionPermille', '950',
-            '-Configuration', 'Release') `
+            '-Configuration', 'Release',
+            '-DotNetPath', $Context.DotNetPath) `
         -StandardOutputPath $outputPath `
         -StandardErrorPath $errorPath `
         -TimeoutSeconds $RatePlan.TimeoutSeconds

@@ -1,3 +1,12 @@
+[CmdletBinding()]
+param(
+    [ValidateNotNullOrEmpty()]
+    [string] $GitPath = "git",
+
+    [ValidateNotNullOrEmpty()]
+    [string] $DotNetPath = "dotnet"
+)
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
@@ -10,7 +19,7 @@ $maximumFixtureBytes = 1MB
 function Invoke-DotNet {
     param([Parameter(Mandatory)][string[]] $Arguments)
 
-    & dotnet @Arguments
+    & $DotNetPath @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
     }
@@ -19,7 +28,7 @@ function Invoke-DotNet {
 function Get-TrackedFiles {
     param([Parameter(Mandatory)][string] $Root)
 
-    $files = @(& git -C $Root ls-files)
+    $files = @(& $GitPath -C $Root ls-files)
     if ($LASTEXITCODE -ne 0) {
         throw "git ls-files failed."
     }
@@ -415,12 +424,12 @@ function Assert-SafeArtifactPath {
 
 Push-Location $repositoryRoot
 try {
-    $initialStatus = @(& git status --porcelain=v1 --untracked-files=all)
+    $initialStatus = @(& $GitPath status --porcelain=v1 --untracked-files=all)
     if ($LASTEXITCODE -ne 0) { throw "git status failed before verification." }
 
     Test-RepositoryCheckFailurePaths
 
-    $actualSdkVersion = (& dotnet --version).Trim()
+    $actualSdkVersion = (& $DotNetPath --version).Trim()
     if ($LASTEXITCODE -ne 0) { throw "dotnet --version failed with exit code $LASTEXITCODE." }
     if ($actualSdkVersion -ne $expectedSdkVersion) {
         throw "Expected .NET SDK $expectedSdkVersion but found $actualSdkVersion."
@@ -454,7 +463,7 @@ try {
         -RelativePaths $trackedFiles `
         -MaximumBytes $maximumFixtureBytes
 
-    $finalStatus = @(& git status --porcelain=v1 --untracked-files=all)
+    $finalStatus = @(& $GitPath status --porcelain=v1 --untracked-files=all)
     if ($LASTEXITCODE -ne 0) { throw "git status failed after verification." }
     Assert-NoGeneratedChanges -Before $initialStatus -After $finalStatus
 }
