@@ -1,5 +1,6 @@
 using ApexLab.Replay.BahrainValidation;
 using ApexLab.Replay.CanonicalValidation;
+using ApexLab.Replay.LapAudit;
 using ApexLab.Replay.Probe;
 using ApexLab.Replay.Replay;
 using ApexLab.Replay.Validation;
@@ -14,6 +15,15 @@ ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
 Console.CancelKeyPress += cancelHandler;
 try
 {
+    if (args.Length != 0 && args[0] == "prepare-bahrain-lap-audit")
+    {
+        var preparation = await BahrainLapAuditPrepareCommand.ExecuteAsync(
+            args,
+            interruption.Token);
+        await Console.Out.WriteLineAsync(preparation.Json);
+        return (int)preparation.ExitCode;
+    }
+
     if (args.Length != 0 && args[0] == "validate-canonical-replay")
     {
         var validation = await CanonicalReplayValidationCommand.ExecuteAsync(
