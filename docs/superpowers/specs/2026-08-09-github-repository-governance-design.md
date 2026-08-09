@@ -1,7 +1,9 @@
 # ApexLab GitHub Repository Governance Design
 
-**Date:** 2026-08-09  
-**Status:** Approved through the owner's instruction to choose and implement the strongest structure  
+**Date:** 2026-08-09
+
+**Status:** Approved through the owner's instruction to choose and implement the strongest structure
+
 **Repository:** `DarianGanev/apexlab-desktop`
 
 ## Purpose
