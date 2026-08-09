@@ -1,5 +1,4 @@
 using System.Runtime.Versioning;
-using System.Security.Cryptography;
 using ApexLab.Application.Canonical;
 using ApexLab.Application.Storage;
 
@@ -150,7 +149,7 @@ internal sealed class CanonicalCacheWriter : ICanonicalCacheWriter
                 .ConfigureAwait(false);
 
             var dataLength = _dataStream.Length;
-            var hashes = await CalculateHashesAsync(
+            var hashes = await CanonicalCacheHash.CalculateAsync(
                     _dataStream,
                     _request.Identity,
                     dataLength,
@@ -173,8 +172,8 @@ internal sealed class CanonicalCacheWriter : ICanonicalCacheWriter
                 .DataLeafName;
             _observer?.Invoke(CanonicalCacheWriterStage.PublishData);
             cancellationToken.ThrowIfCancellationRequested();
-            _directory.RenameOpenFile(_dataStream.SafeFileHandle, dataLeaf);
-            _dataIsStaging = false;
+            await PublishDataAsync(dataLeaf, completion, cancellationToken)
+                .ConfigureAwait(false);
 
             var manifest = CanonicalCacheManifest.FromCompletion(completion);
             var manifestBytes = manifest.Serialize();
@@ -199,8 +198,11 @@ internal sealed class CanonicalCacheWriter : ICanonicalCacheWriter
 
             await _manifestStream.DisposeAsync().ConfigureAwait(false);
             _manifestStream = null;
-            await _dataStream.DisposeAsync().ConfigureAwait(false);
-            _dataStream = null;
+            if (_dataStream is not null)
+            {
+                await _dataStream.DisposeAsync().ConfigureAwait(false);
+                _dataStream = null;
+            }
 
             await VerifyPublishedAsync(
                     manifest,
@@ -341,7 +343,7 @@ internal sealed class CanonicalCacheWriter : ICanonicalCacheWriter
 
         await using var dataStream = _directory.OpenExistingReadOnly(
             manifest.DataLeafName);
-        var hashes = await CalculateHashesAsync(
+        var hashes = await CanonicalCacheHash.CalculateAsync(
                 dataStream,
                 _request.Identity,
                 manifest.Completion.DataLengthBytes,
@@ -360,29 +362,51 @@ internal sealed class CanonicalCacheWriter : ICanonicalCacheWriter
         }
     }
 
-    private static async Task<CanonicalCacheHashes> CalculateHashesAsync(
-        FileStream stream,
-        CanonicalReplayIdentity identity,
-        long dataLength,
+    private async Task PublishDataAsync(
+        string dataLeaf,
+        CanonicalCacheCompletion completion,
         CancellationToken cancellationToken)
     {
-        stream.Position = 0;
-        using var dataHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        using var canonicalHash = CanonicalCacheHash.CreateCanonicalHash(
-            identity,
-            dataLength);
-        var buffer = new byte[81_920];
-        int read;
-        while ((read = await stream.ReadAsync(buffer, cancellationToken)
-                   .ConfigureAwait(false)) != 0)
+        try
         {
-            dataHash.AppendData(buffer, 0, read);
-            canonicalHash.AppendData(buffer, 0, read);
+            _directory.RenameOpenFile(_dataStream!.SafeFileHandle, dataLeaf);
+            _dataIsStaging = false;
+            return;
         }
+        catch (IOException publicationFailure)
+        {
+            await using var existing = _directory.TryOpenExistingReadOnly(dataLeaf);
+            if (existing is null
+                || existing.Length != completion.DataLengthBytes)
+            {
+                throw new IOException(
+                    "An occupied canonical data leaf did not match the finalized bytes.",
+                    publicationFailure);
+            }
 
-        return new(
-            Convert.ToHexStringLower(dataHash.GetHashAndReset()),
-            Convert.ToHexStringLower(canonicalHash.GetHashAndReset()));
+            var hashes = await CanonicalCacheHash.CalculateAsync(
+                    existing,
+                    _request.Identity,
+                    completion.DataLengthBytes,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (!StringComparer.Ordinal.Equals(
+                    hashes.DataSha256,
+                    completion.DataSha256)
+                || !StringComparer.Ordinal.Equals(
+                    hashes.CanonicalSha256,
+                    completion.CanonicalSha256))
+            {
+                throw new IOException(
+                    "An occupied canonical data leaf did not match the finalized bytes.",
+                    publicationFailure);
+            }
+
+            _directory.DeleteOpenFile(_dataStream!.SafeFileHandle);
+            _dataIsStaging = false;
+            await _dataStream.DisposeAsync().ConfigureAwait(false);
+            _dataStream = null;
+        }
     }
 
     private static async Task FlushDurablyAsync(
@@ -469,7 +493,4 @@ internal sealed class CanonicalCacheWriter : ICanonicalCacheWriter
         }
     }
 
-    private sealed record CanonicalCacheHashes(
-        string DataSha256,
-        string CanonicalSha256);
 }

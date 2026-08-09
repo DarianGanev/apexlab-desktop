@@ -104,12 +104,18 @@ internal sealed class WindowsLocalDataDirectory : IDisposable
 
     public FileStream OpenExistingReadOnly(string leafName)
     {
-        var stream = TryOpenExistingReadOnlyCore(leafName, allowMissing: false);
+        var stream = TryOpenExistingCore(
+            leafName,
+            allowMissing: false,
+            deleteAccess: false);
         return stream!;
     }
 
     public FileStream? TryOpenExistingReadOnly(string leafName) =>
-        TryOpenExistingReadOnlyCore(leafName, allowMissing: true);
+        TryOpenExistingCore(leafName, allowMissing: true, deleteAccess: false);
+
+    public FileStream? TryOpenExistingForDeletion(string leafName) =>
+        TryOpenExistingCore(leafName, allowMissing: true, deleteAccess: true);
 
     public LocalDataFileIdentity GetIdentity(SafeFileHandle fileHandle)
     {
@@ -219,16 +225,18 @@ internal sealed class WindowsLocalDataDirectory : IDisposable
         _rootHandle.Dispose();
     }
 
-    private FileStream? TryOpenExistingReadOnlyCore(
+    private FileStream? TryOpenExistingCore(
         string leafName,
-        bool allowMissing)
+        bool allowMissing,
+        bool deleteAccess)
     {
         ThrowIfDisposed();
         ValidateLeafName(leafName, nameof(leafName));
         var expectedPath = Path.Combine(_childPath, leafName);
         var handle = WindowsLocalDataNative.CreateFile(
             expectedPath,
-            WindowsLocalDataNative.GenericRead,
+            WindowsLocalDataNative.GenericRead
+            | (deleteAccess ? WindowsLocalDataNative.DeleteAccess : 0),
             WindowsLocalDataNative.ShareRead,
             IntPtr.Zero,
             WindowsLocalDataNative.OpenExisting,

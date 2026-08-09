@@ -40,6 +40,12 @@ internal sealed class WindowsCanonicalCacheDirectory : IDisposable
         return _directory.TryOpenExistingReadOnly(leafName);
     }
 
+    public FileStream? TryOpenExistingForDeletion(string leafName)
+    {
+        ValidateLeafName(leafName);
+        return _directory.TryOpenExistingForDeletion(leafName);
+    }
+
     public void RenameOpenFile(SafeFileHandle handle, string finalLeafName)
     {
         ValidateLeafName(finalLeafName);

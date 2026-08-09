@@ -30,6 +30,37 @@ internal static class CanonicalCacheHash
         return hash;
     }
 
+    public static async Task<CanonicalCacheHashes> CalculateAsync(
+        Stream stream,
+        CanonicalReplayIdentity identity,
+        long dataLength,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        if (!stream.CanRead || !stream.CanSeek)
+        {
+            throw new ArgumentException(
+                "A readable seekable canonical stream is required.",
+                nameof(stream));
+        }
+
+        stream.Position = 0;
+        using var dataHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        using var canonicalHash = CreateCanonicalHash(identity, dataLength);
+        var buffer = new byte[81_920];
+        int read;
+        while ((read = await stream.ReadAsync(buffer, cancellationToken)
+                   .ConfigureAwait(false)) != 0)
+        {
+            dataHash.AppendData(buffer, 0, read);
+            canonicalHash.AppendData(buffer, 0, read);
+        }
+
+        return new(
+            Convert.ToHexStringLower(dataHash.GetHashAndReset()),
+            Convert.ToHexStringLower(canonicalHash.GetHashAndReset()));
+    }
+
     private static void AppendString(IncrementalHash hash, string value)
     {
         var bytes = Encoding.UTF8.GetBytes(value);
@@ -39,3 +70,7 @@ internal static class CanonicalCacheHash
         hash.AppendData(bytes);
     }
 }
+
+internal sealed record CanonicalCacheHashes(
+    string DataSha256,
+    string CanonicalSha256);
