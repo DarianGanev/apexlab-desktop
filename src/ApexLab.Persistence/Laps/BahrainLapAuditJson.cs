@@ -5,7 +5,7 @@ using ApexLab.Telemetry.Abstractions.Canonical;
 
 namespace ApexLab.Persistence.Laps;
 
-internal static class BahrainLapAuditJson
+public static class BahrainLapAuditJson
 {
     private static readonly string[] RootProperties =
     [
