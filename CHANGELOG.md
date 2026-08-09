@@ -25,6 +25,8 @@ All notable changes to ApexLab are documented in this file.
   tracked descendants, and filesystem reparse points.
 - Package smoke execution uses fresh data/result targets, bounded exact-process cleanup, path-safe
   arguments, atomic result publication, and primary-error-preserving cleanup.
+- Self-contained package evidence includes a successful smoke run with no PATH-visible `dotnet.exe`,
+  invalid global .NET roots, and multilevel runtime lookup disabled.
 
 ### Known limitations
 
