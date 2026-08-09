@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ApexLab.App/ApexLab.App.csproj" />
+    <Project Path="src/ApexLab.Application/ApexLab.Application.csproj" />
+    <Project Path="src/ApexLab.Domain/ApexLab.Domain.csproj" />
+    <Project Path="src/ApexLab.Persistence/ApexLab.Persistence.csproj" />
+    <Project Path="src/ApexLab.Protocols.F125/ApexLab.Protocols.F125.csproj" />
+    <Project Path="src/ApexLab.Telemetry.Abstractions/ApexLab.Telemetry.Abstractions.csproj" />
+    <Project Path="src/ApexLab.Telemetry/ApexLab.Telemetry.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ApexLab.Application.Tests/ApexLab.Application.Tests.csproj" />
+    <Project Path="tests/ApexLab.Domain.Tests/ApexLab.Domain.Tests.csproj" />
+    <Project Path="tests/ApexLab.IntegrationTests/ApexLab.IntegrationTests.csproj" />
+    <Project Path="tests/ApexLab.Persistence.Tests/ApexLab.Persistence.Tests.csproj" />
+    <Project Path="tests/ApexLab.Protocols.F125.Tests/ApexLab.Protocols.F125.Tests.csproj" />
+    <Project Path="tests/ApexLab.Telemetry.Tests/ApexLab.Telemetry.Tests.csproj" />
+  </Folder>
+</Solution>

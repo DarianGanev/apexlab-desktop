@@ -4,6 +4,7 @@
 .idea/
 .agents/
 .codex/
+.superpowers/
 *.suo
 *.user
 *.userosscache
