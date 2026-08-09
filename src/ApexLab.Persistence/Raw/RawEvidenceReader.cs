@@ -10,6 +10,7 @@ using System.Security.Cryptography;
 using System.Text;
 using ApexLab.Application.Capture;
 using ApexLab.Application.Storage;
+using ApexLab.Persistence.Storage;
 using ApexLab.Telemetry.Abstractions.Capture;
 
 namespace ApexLab.Persistence.Raw;
@@ -181,8 +182,8 @@ public static class RawEvidenceReader
         }
         catch (Win32Exception exception)
             when (exception.NativeErrorCode
-                is WindowsRawEvidenceNative.ErrorFileNotFound
-                or WindowsRawEvidenceNative.ErrorPathNotFound)
+                is WindowsLocalDataNative.ErrorFileNotFound
+                or WindowsLocalDataNative.ErrorPathNotFound)
         {
             throw Failure(
                 RawEvidenceReadFailureKind.MissingOrIncomplete);
