@@ -1,4 +1,6 @@
 using System.Text.Json;
+using ApexLab.Protocols.F125.Decoding;
+using ApexLab.Telemetry.Abstractions.Protocol;
 
 namespace ApexLab.IntegrationTests.Contracts;
 
@@ -104,6 +106,9 @@ public sealed class BahrainSliceContractTests
         AssertVersion(versions, "detectorId", "brake-onset-detector-v1");
         AssertVersion(versions, "experimentProtocolId", "single-braking-experiment-v1");
         AssertVersion(versions, "safeSummarySchemaId", "bahrain-safe-summary-v1");
+        Assert.AreEqual(
+            versions.GetProperty("decoderId").GetString(),
+            F125BahrainPacketDecoder.DecoderId);
     }
 
     [TestMethod]
@@ -354,11 +359,99 @@ public sealed class BahrainSliceContractTests
         }
     }
 
+    [TestMethod]
+    public void Production_decoder_surface_preserves_units_and_excludes_transport_data()
+    {
+        AssertProperties<F125MotionPlayerData>(
+            ("Header", typeof(TelemetryHeaderMetadata)),
+            ("WorldPositionXMetres", typeof(float)),
+            ("WorldPositionYMetres", typeof(float)),
+            ("WorldPositionZMetres", typeof(float)));
+        AssertProperties<F125SessionData>(
+            ("Header", typeof(TelemetryHeaderMetadata)),
+            ("Weather", typeof(byte)),
+            ("TrackTemperatureCelsius", typeof(sbyte)),
+            ("AirTemperatureCelsius", typeof(sbyte)),
+            ("TrackLengthMetres", typeof(ushort)),
+            ("SessionType", typeof(byte)),
+            ("TrackId", typeof(sbyte)),
+            ("Formula", typeof(byte)),
+            ("IsSpectating", typeof(bool)),
+            ("IsNetworkGame", typeof(bool)),
+            ("SteeringAssist", typeof(byte)),
+            ("BrakingAssist", typeof(byte)),
+            ("GearboxAssist", typeof(byte)),
+            ("PitAssist", typeof(byte)),
+            ("PitReleaseAssist", typeof(byte)),
+            ("ErsAssist", typeof(byte)),
+            ("DrsAssist", typeof(byte)),
+            ("DynamicRacingLine", typeof(byte)),
+            ("DynamicRacingLineType", typeof(byte)),
+            ("GameMode", typeof(byte)),
+            ("RuleSet", typeof(byte)),
+            ("TimeOfDayMinutesSinceMidnight", typeof(uint)),
+            ("EqualCarPerformance", typeof(bool)),
+            ("RecoveryMode", typeof(byte)));
+        AssertProperties<F125LapPlayerData>(
+            ("Header", typeof(TelemetryHeaderMetadata)),
+            ("LastLapTimeMilliseconds", typeof(uint)),
+            ("CurrentLapTimeMilliseconds", typeof(uint)),
+            ("LapDistanceMetres", typeof(float)),
+            ("TotalDistanceMetres", typeof(float)),
+            ("CurrentLapNumber", typeof(byte)),
+            ("PitStatus", typeof(byte)),
+            ("Sector", typeof(byte)),
+            ("CurrentLapInvalid", typeof(bool)),
+            ("DriverStatus", typeof(byte)),
+            ("ResultStatus", typeof(byte)));
+        AssertProperties<F125EventData>(
+            ("Header", typeof(TelemetryHeaderMetadata)),
+            ("Kind", typeof(F125SliceEventKind)),
+            ("FlashbackFrameIdentifier", typeof(uint?)),
+            ("FlashbackSessionTimeSeconds", typeof(float?)));
+        AssertProperties<F125CarTelemetryPlayerData>(
+            ("Header", typeof(TelemetryHeaderMetadata)),
+            ("SpeedKilometresPerHour", typeof(ushort)),
+            ("ThrottleRatio", typeof(float)),
+            ("BrakeRatio", typeof(float)),
+            ("Gear", typeof(sbyte)));
+    }
+
     private static void AssertAttachment(JsonElement attachment, string name, int bytes, string sha256)
     {
         Assert.AreEqual(name, attachment.GetProperty("name").GetString());
         Assert.AreEqual(bytes, attachment.GetProperty("bytes").GetInt32());
         Assert.AreEqual(sha256, attachment.GetProperty("sha256").GetString());
+    }
+
+    private static void AssertProperties<T>(
+        params (string Name, Type Type)[] expected)
+    {
+        var actual = typeof(T)
+            .GetProperties()
+            .OrderBy(property => property.Name, StringComparer.Ordinal)
+            .Select(property => (property.Name, property.PropertyType))
+            .ToArray();
+        var orderedExpected = expected
+            .OrderBy(property => property.Name, StringComparer.Ordinal)
+            .ToArray();
+        CollectionAssert.AreEqual(orderedExpected, actual);
+
+        string[] forbidden =
+        [
+            "Payload",
+            "Datagram",
+            "Sender",
+            "Path",
+            "CaptureId",
+            "Sha256",
+            "SessionUid",
+        ];
+        var names = actual.Select(property => property.Name).ToArray();
+        foreach (var name in forbidden)
+        {
+            Assert.DoesNotContain(name, names);
+        }
     }
 
     private static void AssertVersion(JsonElement versions, string propertyName, string expected)
