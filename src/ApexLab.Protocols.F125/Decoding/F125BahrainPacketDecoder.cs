@@ -11,6 +11,109 @@ public static class F125BahrainPacketDecoder
 
     private static readonly F125TelemetryProtocolAdapter Adapter = new();
 
+    public static F125DecodeResult<F125SessionData> DecodeSession(
+        ReadOnlySpan<byte> datagram)
+    {
+        const byte packetId = 1;
+
+        var gate = Validate(datagram, packetId);
+        if (!gate.IsValid)
+        {
+            return RejectGate<F125SessionData>(gate);
+        }
+
+        var header = gate.Header!.Value;
+        if (!LittleEndianFieldReader.TryReadByte(datagram, 29, out var weather)
+            || !LittleEndianFieldReader.TryReadSByte(
+                datagram,
+                30,
+                out var trackTemperatureCelsius)
+            || !LittleEndianFieldReader.TryReadSByte(
+                datagram,
+                31,
+                out var airTemperatureCelsius)
+            || !LittleEndianFieldReader.TryReadUInt16(
+                datagram,
+                33,
+                out var trackLengthMetres)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 35, out var sessionType)
+            || !LittleEndianFieldReader.TryReadSByte(datagram, 36, out var trackId)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 37, out var formula)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 44, out var isSpectating)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 154, out var networkGame)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 685, out var steeringAssist)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 686, out var brakingAssist)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 687, out var gearboxAssist)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 688, out var pitAssist)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 689, out var pitReleaseAssist)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 690, out var ersAssist)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 691, out var drsAssist)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 692, out var dynamicRacingLine)
+            || !LittleEndianFieldReader.TryReadByte(
+                datagram,
+                693,
+                out var dynamicRacingLineType)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 694, out var gameMode)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 695, out var ruleSet)
+            || !LittleEndianFieldReader.TryReadUInt32(
+                datagram,
+                696,
+                out var timeOfDayMinutesSinceMidnight)
+            || !LittleEndianFieldReader.TryReadByte(
+                datagram,
+                708,
+                out var equalCarPerformance)
+            || !LittleEndianFieldReader.TryReadByte(datagram, 709, out var recoveryMode)
+            || weather > 5
+            || !IsBinary(isSpectating)
+            || !IsBinary(networkGame)
+            || steeringAssist > 1
+            || brakingAssist > 3
+            || gearboxAssist is < 1 or > 3
+            || pitAssist > 1
+            || pitReleaseAssist > 1
+            || ersAssist > 1
+            || drsAssist > 1
+            || dynamicRacingLine > 2
+            || dynamicRacingLineType > 1
+            || timeOfDayMinutesSinceMidnight >= 1440
+            || !IsBinary(equalCarPerformance)
+            || recoveryMode > 2)
+        {
+            return F125DecodeResult<F125SessionData>.Rejected(
+                F125DecodeReason.MalformedSelectedField,
+                header);
+        }
+
+        return F125DecodeResult<F125SessionData>.Decoded(
+            new F125SessionData(
+                header,
+                weather,
+                trackTemperatureCelsius,
+                airTemperatureCelsius,
+                trackLengthMetres,
+                sessionType,
+                trackId,
+                formula,
+                isSpectating == 1,
+                networkGame == 1,
+                steeringAssist,
+                brakingAssist,
+                gearboxAssist,
+                pitAssist,
+                pitReleaseAssist,
+                ersAssist,
+                drsAssist,
+                dynamicRacingLine,
+                dynamicRacingLineType,
+                gameMode,
+                ruleSet,
+                timeOfDayMinutesSinceMidnight,
+                equalCarPerformance == 1,
+                recoveryMode),
+            header);
+    }
+
     public static F125DecodeResult<F125MotionPlayerData> DecodeMotion(
         ReadOnlySpan<byte> datagram)
     {
@@ -117,6 +220,8 @@ public static class F125BahrainPacketDecoder
             gate.Reason,
             gate.Header);
     }
+
+    private static bool IsBinary(byte value) => value <= 1;
 }
 
 internal readonly record struct F125DecodeGateResult
