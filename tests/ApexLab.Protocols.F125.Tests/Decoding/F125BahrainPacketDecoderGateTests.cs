@@ -159,11 +159,42 @@ public sealed class F125BahrainPacketDecoderGateTests
         }
     }
 
+    [TestMethod]
+    public void FixedSeedArbitraryDatagramsNeverThrowOrReportUnspecified()
+    {
+        const int seed = 0xB4125;
+        var random = new Random(seed);
+
+        for (var sample = 0; sample < 2_048; sample++)
+        {
+            var datagram = new byte[random.Next(0, 2_050)];
+            random.NextBytes(datagram);
+
+            AssertKnown(F125BahrainPacketDecoder.DecodeMotion(datagram), sample);
+            AssertKnown(F125BahrainPacketDecoder.DecodeSession(datagram), sample);
+            AssertKnown(F125BahrainPacketDecoder.DecodeLapData(datagram), sample);
+            AssertKnown(F125BahrainPacketDecoder.DecodeEvent(datagram), sample);
+            AssertKnown(F125BahrainPacketDecoder.DecodeCarTelemetry(datagram), sample);
+        }
+    }
+
     private static void AssertRejected(
         F125DecodeGateResult result,
         F125DecodeReason expected)
     {
         Assert.IsFalse(result.IsValid);
         Assert.AreEqual(expected, result.Reason);
+    }
+
+    private static void AssertKnown<TPacket>(
+        F125DecodeResult<TPacket> result,
+        int sample)
+        where TPacket : struct
+    {
+        Assert.AreNotEqual(
+            F125DecodeDisposition.Unspecified,
+            result.Disposition,
+            $"Seed 0xB4125 sample {sample} returned an unspecified disposition.");
+        Assert.IsTrue(Enum.IsDefined(result.Reason), $"Seed 0xB4125 sample {sample}.");
     }
 }

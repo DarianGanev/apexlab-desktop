@@ -11,6 +11,59 @@ public static class F125BahrainPacketDecoder
 
     private static readonly F125TelemetryProtocolAdapter Adapter = new();
 
+    public static F125DecodeResult<F125CarTelemetryPlayerData> DecodeCarTelemetry(
+        ReadOnlySpan<byte> datagram)
+    {
+        const byte packetId = 6;
+        const int arrayBaseOffset = 29;
+        const int stride = 60;
+
+        var gate = Validate(datagram, packetId);
+        if (!gate.IsValid)
+        {
+            return RejectGate<F125CarTelemetryPlayerData>(gate);
+        }
+
+        var header = gate.Header!.Value;
+        var memberBase = checked(
+            arrayBaseOffset + (header.PlayerCarIndex * stride));
+        if (!LittleEndianFieldReader.TryReadUInt16(
+                datagram,
+                memberBase,
+                out var speedKilometresPerHour)
+            || !LittleEndianFieldReader.TryReadSingle(
+                datagram,
+                memberBase + 2,
+                out var throttleRatio)
+            || !LittleEndianFieldReader.TryReadSingle(
+                datagram,
+                memberBase + 10,
+                out var brakeRatio)
+            || !LittleEndianFieldReader.TryReadSByte(
+                datagram,
+                memberBase + 15,
+                out var gear)
+            || !float.IsFinite(throttleRatio)
+            || throttleRatio is < 0F or > 1F
+            || !float.IsFinite(brakeRatio)
+            || brakeRatio is < 0F or > 1F
+            || gear is < -1 or > 8)
+        {
+            return F125DecodeResult<F125CarTelemetryPlayerData>.Rejected(
+                F125DecodeReason.MalformedSelectedField,
+                header);
+        }
+
+        return F125DecodeResult<F125CarTelemetryPlayerData>.Decoded(
+            new F125CarTelemetryPlayerData(
+                header,
+                speedKilometresPerHour,
+                throttleRatio,
+                brakeRatio,
+                gear),
+            header);
+    }
+
     public static F125DecodeResult<F125EventData> DecodeEvent(
         ReadOnlySpan<byte> datagram)
     {
