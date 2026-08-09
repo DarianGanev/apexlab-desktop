@@ -6,7 +6,7 @@ using ApexLab.Application.Storage;
 namespace ApexLab.Persistence.Canonical;
 
 [SupportedOSPlatform("windows")]
-internal sealed class CanonicalCacheStore : ICanonicalCacheStore
+public sealed class CanonicalCacheStore : ICanonicalCacheStore
 {
     private readonly ApplicationPaths _paths;
 

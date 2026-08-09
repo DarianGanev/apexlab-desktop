@@ -10,6 +10,7 @@ public enum CanonicalReplayFailureKind
     ProjectionRejected = 3,
     DuplicateOrReorderedSequence = 4,
     UnexpectedProjection = 5,
+    UnexpectedSender = 6,
 }
 
 public sealed class CanonicalReplayException : Exception

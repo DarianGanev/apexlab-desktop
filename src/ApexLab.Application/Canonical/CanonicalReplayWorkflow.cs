@@ -123,6 +123,13 @@ public static class CanonicalReplayWorkflow
                            .ReadAllAsync(cancellationToken)
                            .ConfigureAwait(false))
         {
+            if (!SenderPolicy.LoopbackOnly.IsExpected(envelope.Sender))
+            {
+                throw new CanonicalReplayException(
+                    CanonicalReplayFailureKind.UnexpectedSender,
+                    "Canonical replay accepts loopback evidence only.");
+            }
+
             if (previousSequence.HasValue
                 && envelope.Sequence <= previousSequence.Value)
             {

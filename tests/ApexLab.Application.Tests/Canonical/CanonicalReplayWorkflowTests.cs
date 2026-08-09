@@ -146,6 +146,31 @@ public sealed class CanonicalReplayWorkflowTests
     }
 
     [TestMethod]
+    public async Task NonLoopbackEvidenceNeverReachesTheProjectorOrCache()
+    {
+        var request = Request();
+        var writer = new FakeWriter(request);
+
+        var exception = await Assert.ThrowsAsync<CanonicalReplayException>(() =>
+            CanonicalReplayWorkflow.ExecuteAsync(
+                request,
+                new FakeSource([
+                    Envelope(
+                        1,
+                        10,
+                        projectionCode: 1,
+                        sender: IPAddress.Parse("192.0.2.10")),
+                ]),
+                new FakeProjector(request.Identity),
+                new FakeStore(null, writer),
+                TestContext.CancellationToken));
+
+        Assert.AreEqual(CanonicalReplayFailureKind.UnexpectedSender, exception.Kind);
+        Assert.IsFalse(writer.FinalizeCalled);
+        Assert.IsEmpty(writer.Records);
+    }
+
+    [TestMethod]
     public async Task IdentityMismatchFailsBeforeCacheOrSourceUse()
     {
         var request = Request();
@@ -262,12 +287,13 @@ public sealed class CanonicalReplayWorkflowTests
     private static DatagramEnvelope Envelope(
         long sequence,
         long arrival,
-        byte projectionCode) =>
+        byte projectionCode,
+        IPAddress? sender = null) =>
         DatagramEnvelope.CopyFrom(
             sequence,
             arrival,
             new DateTimeOffset(2026, 8, 9, 12, 0, 0, TimeSpan.Zero),
-            new DatagramSender(IPAddress.Loopback, 20_777),
+            new DatagramSender(sender ?? IPAddress.Loopback, 20_777),
             [projectionCode]);
 
     private static CanonicalPacket Packet() =>
