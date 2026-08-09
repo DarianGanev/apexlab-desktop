@@ -1,5 +1,5 @@
-using ApexLab.Telemetry.Abstractions.Protocol;
 using ApexLab.Protocols.F125.Parsing;
+using ApexLab.Telemetry.Abstractions.Protocol;
 
 namespace ApexLab.Protocols.F125.Decoding;
 
