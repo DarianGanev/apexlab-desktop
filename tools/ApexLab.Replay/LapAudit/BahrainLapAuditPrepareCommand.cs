@@ -76,7 +76,12 @@ internal static class BahrainLapAuditPrepareCommand
                         BahrainLapAuditContract.AuditId,
                         document.Entries.Count,
                         PrivateDataExcluded: true,
-                        "completePrivateManualAudit"),
+                        document.Entries.Count(entry =>
+                            entry.Boundary.Completeness
+                            == LapBoundaryCompleteness.Complete)
+                        >= BahrainLapAuditContract.MinimumComparableBaselineLaps
+                            ? "completePrivateManualAudit"
+                            : "captureMoreLaps"),
                     JsonOptions));
         }
         catch (OperationCanceledException)

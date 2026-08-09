@@ -37,6 +37,20 @@ public sealed class BahrainLapAuditPrepareCommandTests
     }
 
     [TestMethod]
+    public async Task FewerThanFiveCompleteCandidatesRequestsMoreEvidence()
+    {
+        var result = await BahrainLapAuditPrepareCommand.ExecuteAsync(
+            ValidArguments(),
+            TestContext.CancellationToken,
+            static (_, _, _) => Task.FromResult(Template(candidateCount: 3)));
+
+        using var document = JsonDocument.Parse(result.Json);
+        Assert.AreEqual(
+            "captureMoreLaps",
+            document.RootElement.GetProperty("nextAction").GetString());
+    }
+
+    [TestMethod]
     public async Task ExactArgumentsAndBoundedFailuresAreEnforced()
     {
         foreach (var invalid in new[]
@@ -110,11 +124,11 @@ public sealed class BahrainLapAuditPrepareCommandTests
         var entries = Enumerable.Range(0, candidateCount).Select(index =>
             new BahrainLapAuditEntry(
                 new LapCandidateId($"{index:x64}"),
-                LapBoundary.Partial(
-                    LapBoundaryCompleteness.TrailingPartial,
+                LapBoundary.Complete(
                     index + 1L,
                     index + 2L,
-                    (byte)(index + 1)),
+                    (byte)(index + 1),
+                    checked((uint)(90_000 + index))),
                 LapEvidenceFlags.None,
                 context: null));
         return new(
