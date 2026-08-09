@@ -60,6 +60,9 @@ public sealed class BahrainSliceContractTests
         Assert.AreEqual("ea-f1-25-v3", source.GetProperty("adapterId").GetString());
         Assert.AreEqual(2025, source.GetProperty("packetFormat").GetInt32());
         Assert.AreEqual(25, source.GetProperty("gameYear").GetInt32());
+        Assert.AreEqual(
+            "https://forums.ea.com/blog/f1-games-game-info-hub-en/ea-sports%E2%84%A2-f1%C2%AE25-2026-season-pack-udp-specification/12187347",
+            source.GetProperty("officialPage").GetString());
 
         var attachments = source.GetProperty("attachments").EnumerateArray().ToArray();
         Assert.HasCount(2, attachments);
@@ -272,8 +275,13 @@ public sealed class BahrainSliceContractTests
             manualInputs.Select(item => item.GetProperty("name").GetString()).ToArray());
         foreach (var input in manualInputs)
         {
+            Assert.IsFalse(string.IsNullOrWhiteSpace(input.GetProperty("scope").GetString()));
+            Assert.IsFalse(string.IsNullOrWhiteSpace(input.GetProperty("valueType").GetString()));
             Assert.AreEqual("local-only", input.GetProperty("privacy").GetString());
             Assert.IsNotEmpty(input.GetProperty("consumers").EnumerateArray().ToArray());
+            Assert.IsTrue(
+                input.TryGetProperty("required", out _) || input.TryGetProperty("requiredWhen", out _),
+                input.GetProperty("name").GetString());
         }
 
         var traceability = root.GetProperty("downstreamTraceability").EnumerateArray().ToArray();
