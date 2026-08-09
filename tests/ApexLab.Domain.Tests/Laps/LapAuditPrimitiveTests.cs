@@ -17,6 +17,11 @@ public sealed class LapAuditPrimitiveTests
             typeof(BahrainLapAuditContract).GetField(
                 nameof(BahrainLapAuditContract.MinimumComparableBaselineLaps))!
                 .GetRawConstantValue());
+        Assert.AreEqual(
+            1_024,
+            typeof(BahrainLapAuditContract).GetField(
+                nameof(BahrainLapAuditContract.MaximumInventoryCandidates))!
+                .GetRawConstantValue());
         CollectionAssert.AreEqual(
             new[]
             {
