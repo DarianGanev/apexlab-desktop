@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security or privacy vulnerability privately
+    url: https://github.com/DarianGanev/apexlab-desktop/security/advisories/new
+    about: Open a private repository security advisory instead of a public issue.
