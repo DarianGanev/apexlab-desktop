@@ -47,6 +47,8 @@ This gate prevents fixtures and code derived from the same mistaken interpretati
 
 ## Weeks 5-9: Provisional Bahrain coaching vertical slice
 
+**Frozen slice contract:** [`v0.3-bahrain-slice-v1.md`](contracts/v0.3-bahrain-slice-v1.md)
+
 **Build only what the slice needs**
 
 - Decode only the Session, Lap Data, Motion, Car Telemetry, and Event fields required by one private recorded session.

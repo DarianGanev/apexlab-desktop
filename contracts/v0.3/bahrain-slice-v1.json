@@ -1,0 +1,195 @@
+{
+  "schemaVersion": 1,
+  "contractId": "apexlab-bahrain-tt-slice-v1",
+  "status": "frozen",
+  "protocolSource": {
+    "adapterId": "ea-f1-25-v3",
+    "packetFormat": 2025,
+    "gameYear": 25,
+    "officialPage": "https://forums.ea.com/blog/f1-games-game-info-hub-en/ea-sports%E2%84%A2-f1%C2%AE25-2026-season-pack-udp-specification/12187347",
+    "attachments": [
+      {
+        "name": "Data Output from F1 25 v3.pdf",
+        "bytes": 659792,
+        "sha256": "850199D1EA817B887B150118095C5CA86527A397D578D53FD5C83427636B92D5"
+      },
+      {
+        "name": "F1 25 Telemetry Output Structures.txt",
+        "bytes": 51656,
+        "sha256": "49CCEADC60A1A6403A59620C6FC09DA377048BA004B15C199399F775B9B3FC69"
+      }
+    ]
+  },
+  "supportedContext": {
+    "trackId": 3,
+    "trackName": "Sakhir (Bahrain)",
+    "gameMode": 5,
+    "sessionType": 18,
+    "ruleSet": 2,
+    "networkGame": 0,
+    "minimumPlayerCarIndex": 0,
+    "maximumPlayerCarIndex": 21,
+    "secondaryPlayerCarIndex": 255,
+    "spectatingAllowed": false,
+    "stablePlayerCarIndexRequired": true
+  },
+  "versionIds": {
+    "contractId": "apexlab-bahrain-tt-slice-v1",
+    "decoderId": "f125-v3-minimal-decoder-v1",
+    "canonicalSchemaId": "apexlab-canonical-sample-v1",
+    "lapAuditId": "bahrain-tt-lap-audit-v1",
+    "alignmentId": "distance-grid-1m-v1",
+    "referenceId": "personal-reference-medoid-v1",
+    "cornerRevisionId": "bahrain-corner-revision-v1",
+    "detectorId": "brake-onset-detector-v1",
+    "experimentProtocolId": "single-braking-experiment-v1",
+    "safeSummarySchemaId": "bahrain-safe-summary-v1"
+  },
+  "header": {
+    "length": 29,
+    "fields": [
+      { "wireName": "m_packetFormat", "absoluteOffset": 0, "width": 2, "wireType": "uint16-le", "unit": "protocol-year", "consumers": [25, 26] },
+      { "wireName": "m_gameYear", "absoluteOffset": 2, "width": 1, "wireType": "uint8", "unit": "two-digit-year", "consumers": [25, 26] },
+      { "wireName": "m_gameMajorVersion", "absoluteOffset": 3, "width": 1, "wireType": "uint8", "unit": "version-component", "consumers": [25, 34] },
+      { "wireName": "m_gameMinorVersion", "absoluteOffset": 4, "width": 1, "wireType": "uint8", "unit": "version-component", "consumers": [25, 34] },
+      { "wireName": "m_packetVersion", "absoluteOffset": 5, "width": 1, "wireType": "uint8", "unit": "version-component", "consumers": [25, 26] },
+      { "wireName": "m_packetId", "absoluteOffset": 6, "width": 1, "wireType": "uint8", "unit": "packet-family-id", "consumers": [25, 26] },
+      { "wireName": "m_sessionUID", "absoluteOffset": 7, "width": 8, "wireType": "uint64-le", "unit": "opaque-session-correlation", "privacy": "local-only", "consumers": [25, 26, 27, 34] },
+      { "wireName": "m_sessionTime", "absoluteOffset": 15, "width": 4, "wireType": "float32-le", "unit": "seconds", "consumers": [26, 27, 28, 29, 30, 31, 32, 33] },
+      { "wireName": "m_frameIdentifier", "absoluteOffset": 19, "width": 4, "wireType": "uint32-le", "unit": "frame", "privacy": "local-only", "consumers": [25, 26, 27] },
+      { "wireName": "m_overallFrameIdentifier", "absoluteOffset": 23, "width": 4, "wireType": "uint32-le", "unit": "frame", "privacy": "local-only", "consumers": [25, 26, 27] },
+      { "wireName": "m_playerCarIndex", "absoluteOffset": 27, "width": 1, "wireType": "uint8", "unit": "array-index", "consumers": [25, 26, 27, 28, 29, 30, 31, 32, 33] },
+      { "wireName": "m_secondaryPlayerCarIndex", "absoluteOffset": 28, "width": 1, "wireType": "uint8", "unit": "array-index", "consumers": [25, 26, 27] }
+    ]
+  },
+  "packets": [
+    {
+      "family": "Motion",
+      "packetId": 0,
+      "packetVersion": 1,
+      "datagramBytes": 1349,
+      "layout": { "kind": "player-array", "arrayBaseOffset": 29, "arrayCount": 22, "stride": 60, "indexSource": "m_playerCarIndex" },
+      "fields": [
+        { "wireName": "m_worldPositionX", "memberOffset": 0, "width": 4, "wireType": "float32-le", "unit": "metres", "consumers": [26, 29, 32] },
+        { "wireName": "m_worldPositionY", "memberOffset": 4, "width": 4, "wireType": "float32-le", "unit": "metres", "consumers": [26, 29, 32] },
+        { "wireName": "m_worldPositionZ", "memberOffset": 8, "width": 4, "wireType": "float32-le", "unit": "metres", "consumers": [26, 29, 32] }
+      ]
+    },
+    {
+      "family": "Session",
+      "packetId": 1,
+      "packetVersion": 1,
+      "datagramBytes": 753,
+      "layout": { "kind": "singleton" },
+      "fields": [
+        { "wireName": "m_weather", "absoluteOffset": 29, "width": 1, "wireType": "uint8", "unit": "weather-enum", "consumers": [25, 27, 34] },
+        { "wireName": "m_trackTemperature", "absoluteOffset": 30, "width": 1, "wireType": "int8", "unit": "degrees-celsius", "consumers": [27, 28, 34] },
+        { "wireName": "m_airTemperature", "absoluteOffset": 31, "width": 1, "wireType": "int8", "unit": "degrees-celsius", "consumers": [27, 28, 34] },
+        { "wireName": "m_trackLength", "absoluteOffset": 33, "width": 2, "wireType": "uint16-le", "unit": "metres", "consumers": [25, 26, 27, 29] },
+        { "wireName": "m_sessionType", "absoluteOffset": 35, "width": 1, "wireType": "uint8", "unit": "session-type-enum", "consumers": [25, 27, 34] },
+        { "wireName": "m_trackId", "absoluteOffset": 36, "width": 1, "wireType": "int8", "unit": "track-id-enum", "consumers": [25, 27, 34] },
+        { "wireName": "m_formula", "absoluteOffset": 37, "width": 1, "wireType": "uint8", "unit": "formula-enum", "consumers": [25, 27, 34] },
+        { "wireName": "m_isSpectating", "absoluteOffset": 44, "width": 1, "wireType": "uint8", "unit": "boolean", "consumers": [25, 27, 34] },
+        { "wireName": "m_networkGame", "absoluteOffset": 154, "width": 1, "wireType": "uint8", "unit": "boolean", "consumers": [25, 27, 34] },
+        { "wireName": "m_steeringAssist", "absoluteOffset": 685, "width": 1, "wireType": "uint8", "unit": "assist-enum", "consumers": [25, 27, 28, 34] },
+        { "wireName": "m_brakingAssist", "absoluteOffset": 686, "width": 1, "wireType": "uint8", "unit": "assist-enum", "consumers": [25, 27, 28, 34] },
+        { "wireName": "m_gearboxAssist", "absoluteOffset": 687, "width": 1, "wireType": "uint8", "unit": "assist-enum", "consumers": [25, 27, 28, 34] },
+        { "wireName": "m_pitAssist", "absoluteOffset": 688, "width": 1, "wireType": "uint8", "unit": "assist-enum", "consumers": [25, 27, 28, 34] },
+        { "wireName": "m_pitReleaseAssist", "absoluteOffset": 689, "width": 1, "wireType": "uint8", "unit": "assist-enum", "consumers": [25, 27, 28, 34] },
+        { "wireName": "m_ERSAssist", "absoluteOffset": 690, "width": 1, "wireType": "uint8", "unit": "assist-enum", "consumers": [25, 27, 28, 34] },
+        { "wireName": "m_DRSAssist", "absoluteOffset": 691, "width": 1, "wireType": "uint8", "unit": "assist-enum", "consumers": [25, 27, 28, 34] },
+        { "wireName": "m_dynamicRacingLine", "absoluteOffset": 692, "width": 1, "wireType": "uint8", "unit": "assist-enum", "consumers": [25, 27, 28, 34] },
+        { "wireName": "m_dynamicRacingLineType", "absoluteOffset": 693, "width": 1, "wireType": "uint8", "unit": "assist-enum", "consumers": [25, 27, 28, 34] },
+        { "wireName": "m_gameMode", "absoluteOffset": 694, "width": 1, "wireType": "uint8", "unit": "game-mode-enum", "consumers": [25, 27, 34] },
+        { "wireName": "m_ruleSet", "absoluteOffset": 695, "width": 1, "wireType": "uint8", "unit": "ruleset-enum", "consumers": [25, 27, 34] },
+        { "wireName": "m_timeOfDay", "absoluteOffset": 696, "width": 4, "wireType": "uint32-le", "unit": "minutes-since-midnight", "consumers": [27, 28, 34] },
+        { "wireName": "m_equalCarPerformance", "absoluteOffset": 708, "width": 1, "wireType": "uint8", "unit": "equal-performance-enum", "consumers": [25, 27, 28, 34] },
+        { "wireName": "m_recoveryMode", "absoluteOffset": 709, "width": 1, "wireType": "uint8", "unit": "recovery-mode-enum", "consumers": [25, 27, 34] }
+      ]
+    },
+    {
+      "family": "LapData",
+      "packetId": 2,
+      "packetVersion": 1,
+      "datagramBytes": 1285,
+      "layout": { "kind": "player-array", "arrayBaseOffset": 29, "arrayCount": 22, "stride": 57, "indexSource": "m_playerCarIndex" },
+      "fields": [
+        { "wireName": "m_lastLapTimeInMS", "memberOffset": 0, "width": 4, "wireType": "uint32-le", "unit": "milliseconds", "consumers": [26, 27, 28, 30, 31, 33] },
+        { "wireName": "m_currentLapTimeInMS", "memberOffset": 4, "width": 4, "wireType": "uint32-le", "unit": "milliseconds", "consumers": [26, 27, 28, 30, 31, 33] },
+        { "wireName": "m_lapDistance", "memberOffset": 20, "width": 4, "wireType": "float32-le", "unit": "metres", "consumers": [26, 27, 28, 29, 30, 31, 32, 33] },
+        { "wireName": "m_totalDistance", "memberOffset": 24, "width": 4, "wireType": "float32-le", "unit": "metres", "consumers": [26, 27, 28] },
+        { "wireName": "m_currentLapNum", "memberOffset": 33, "width": 1, "wireType": "uint8", "unit": "lap-count", "consumers": [26, 27, 28] },
+        { "wireName": "m_pitStatus", "memberOffset": 34, "width": 1, "wireType": "uint8", "unit": "pit-status-enum", "consumers": [26, 27, 28] },
+        { "wireName": "m_sector", "memberOffset": 36, "width": 1, "wireType": "uint8", "unit": "sector-enum", "consumers": [26, 27, 28, 29] },
+        { "wireName": "m_currentLapInvalid", "memberOffset": 37, "width": 1, "wireType": "uint8", "unit": "boolean", "consumers": [26, 27, 28, 30, 31, 33] },
+        { "wireName": "m_driverStatus", "memberOffset": 44, "width": 1, "wireType": "uint8", "unit": "driver-status-enum", "consumers": [26, 27, 28] },
+        { "wireName": "m_resultStatus", "memberOffset": 45, "width": 1, "wireType": "uint8", "unit": "result-status-enum", "consumers": [26, 27, 28] }
+      ]
+    },
+    {
+      "family": "Event",
+      "packetId": 3,
+      "packetVersion": 1,
+      "datagramBytes": 45,
+      "layout": { "kind": "singleton" },
+      "allowedEventCodes": ["SSTA", "SEND", "FLBK"],
+      "fields": [
+        { "wireName": "m_eventStringCode", "absoluteOffset": 29, "width": 4, "wireType": "ascii-4", "unit": "event-code", "consumers": [25, 26, 27, 34] },
+        { "wireName": "flashbackFrameIdentifier", "absoluteOffset": 33, "width": 4, "wireType": "uint32-le", "unit": "frame", "appliesToEvent": "FLBK", "consumers": [25, 26, 27] },
+        { "wireName": "flashbackSessionTime", "absoluteOffset": 37, "width": 4, "wireType": "float32-le", "unit": "seconds", "appliesToEvent": "FLBK", "consumers": [25, 26, 27] }
+      ]
+    },
+    {
+      "family": "CarTelemetry",
+      "packetId": 6,
+      "packetVersion": 1,
+      "datagramBytes": 1352,
+      "layout": { "kind": "player-array", "arrayBaseOffset": 29, "arrayCount": 22, "stride": 60, "indexSource": "m_playerCarIndex" },
+      "fields": [
+        { "wireName": "m_speed", "memberOffset": 0, "width": 2, "wireType": "uint16-le", "unit": "kilometres-per-hour", "consumers": [26, 30, 31, 32, 33] },
+        { "wireName": "m_throttle", "memberOffset": 2, "width": 4, "wireType": "float32-le", "unit": "ratio-0-to-1", "consumers": [26, 30, 31, 32, 33] },
+        { "wireName": "m_brake", "memberOffset": 10, "width": 4, "wireType": "float32-le", "unit": "ratio-0-to-1", "consumers": [26, 30, 31, 32, 33] },
+        { "wireName": "m_gear", "memberOffset": 15, "width": 1, "wireType": "int8", "unit": "gear", "consumers": [26, 30, 31, 32, 33] }
+      ]
+    }
+  ],
+  "manualAuditInputs": [
+    { "name": "evidenceIdentity", "scope": "capture", "valueType": "opaque-local-reference", "required": true, "privacy": "local-only", "consumers": [26, 27, 30, 31, 32, 33, 34] },
+    { "name": "evidenceIntegrityPassed", "scope": "capture", "valueType": "boolean", "required": true, "privacy": "local-only", "consumers": [26, 27, 34] },
+    { "name": "gameBuild", "scope": "session", "valueType": "bounded-text", "maximumCharacters": 80, "required": true, "privacy": "local-only", "consumers": [25, 27, 34] },
+    { "name": "trackAndModeVisuallyConfirmed", "scope": "session", "valueType": "boolean", "required": true, "privacy": "local-only", "consumers": [25, 27, 34] },
+    { "name": "playerVehicle", "scope": "session", "valueType": "controlled-text", "maximumCharacters": 80, "required": true, "privacy": "local-only", "consumers": [27, 34] },
+    { "name": "controllerProfile", "scope": "session", "valueType": "controlled-text", "maximumCharacters": 80, "required": true, "privacy": "local-only", "consumers": [27, 31, 34] },
+    { "name": "setupDescriptor", "scope": "session", "valueType": "controlled-text", "maximumCharacters": 120, "required": true, "privacy": "local-only", "consumers": [27, 31, 34] },
+    { "name": "setupUnchanged", "scope": "session", "valueType": "boolean", "required": true, "privacy": "local-only", "consumers": [27, 31, 34] },
+    { "name": "tyreCompound", "scope": "session", "valueType": "controlled-text", "maximumCharacters": 40, "required": true, "privacy": "local-only", "consumers": [27, 31, 34] },
+    { "name": "contextCrossCheckPassed", "scope": "session", "valueType": "boolean", "required": true, "privacy": "local-only", "consumers": [27, 28, 30, 31, 34] },
+    { "name": "lapAuditDecision", "scope": "lap", "valueType": "enum", "allowedValues": ["included", "excluded"], "required": true, "privacy": "local-only", "consumers": [27, 28, 30, 31, 32, 33, 34] },
+    { "name": "lapExclusionReason", "scope": "lap", "valueType": "enum", "allowedValues": ["invalidated", "pit-entry-or-exit", "flashback-observed", "material-gap", "context-mismatch", "incomplete-lap", "other-factual"], "requiredWhen": "lapAuditDecision=excluded", "privacy": "local-only", "consumers": [27, 28, 30, 32, 34] },
+    { "name": "cornerRevisionId", "scope": "review", "valueType": "version-id", "required": true, "privacy": "local-only", "consumers": [29, 30, 31, 32, 33, 34] },
+    { "name": "landmarkReviewId", "scope": "review", "valueType": "opaque-local-reference", "required": true, "privacy": "local-only", "consumers": [29, 31, 33, 34] }
+  ],
+  "downstreamTraceability": [
+    { "issue": 25, "requirements": ["Decode only the five selected packet families and fields", "Check packet format, game year, packet version, datagram length, and player index", "Fail closed on malformed or unsupported input and retain explicit units"] },
+    { "issue": 26, "requirements": ["Build only selected canonical channels", "Bind derived identity to evidence and version IDs locally", "Preserve material gaps and deterministic replay"] },
+    { "issue": 27, "requirements": ["Record a manual audit and context match for every included lap", "Record a factual reason for every excluded lap", "Abstain below five comparable baseline laps"] },
+    { "issue": 28, "requirements": ["Align valid covered regions on the one-metre grid", "Select the personal reference reproducibly and resist one outlier", "Preserve material gaps and verify finish delta tolerance"] },
+    { "issue": 29, "requirements": ["Store one immutable revisioned Bahrain corner definition", "Map reviewed cockpit-visible landmarks to its distance region", "Keep earlier evidence bound to its original revision"] },
+    { "issue": 30, "requirements": ["Detect brake onset with frozen units and version identity", "Expose confidence, coverage, local evidence links, and abstention", "Make no causal or generalized detector claim"] },
+    { "issue": 31, "requirements": ["Freeze hypothesis, instruction, thresholds, selections, adherence, guards, and expiry", "Distinguish supported, rejected, inconclusive, not-followed, and expired", "Prevent rewriting an evaluated experiment"] },
+    { "issue": 32, "requirements": ["Show local lap selection, exclusions, coverage, gaps, reference, delta, and one finding", "Make abstention as prominent as a finding", "Trace findings to local evidence without exporting it"] },
+    { "issue": 33, "requirements": ["Permit at most one active landmark-anchored experiment", "Show measurable action, adherence, guards, and categorical outcome", "Trace every result back to Review evidence"] },
+    { "issue": 34, "requirements": ["Run the frozen slice and private workflow end to end", "Prove deterministic replay and provenance on exact commits", "Emit only the closed safe summary and publish no private identifiers"] }
+  ],
+  "safeSummarySchema": "contracts/v0.3/bahrain-safe-summary-v1.schema.json",
+  "privacy": {
+    "rawEvidenceLocation": "local-only",
+    "commitAllowed": ["contract artifacts", "synthetic fixtures", "aggregate pass-or-fail summaries"],
+    "commitForbidden": ["raw UDP payloads", "capture identifiers", "session or frame identifiers", "sender data", "filesystem locations", "lap or segment times", "world coordinates", "setup values", "free-text notes"]
+  },
+  "nonClaims": [
+    "No support outside offline single-player Bahrain Time Trial is claimed.",
+    "No competitive ranking, ideal-lap oracle, causal coaching, or performance guarantee is claimed.",
+    "No raw or identifying telemetry is safe to publish merely because this contract selected its field."
+  ]
+}
