@@ -9,7 +9,10 @@ This is a personal software-engineering diploma project, not a startup MVP. Its 
 The native Windows foundation is executable and tested: it includes the WPF shell, validated local
 settings, single-instance lifecycle coordination, safe SQLite schema migration, headless package
 smoke testing, reproducible verification/packaging scripts, strict base-F1-25 packet-envelope
-validation, bounded loopback UDP reception, and a privacy-safe live traffic probe.
+validation, bounded loopback UDP reception, a privacy-safe live traffic probe, integrity-bound raw
+evidence capture, and deterministic replay. A private real-game F1 25 Time Trial run has passed the
+guided manifest, replay, sequence-gap, privacy, protocol-assumption, and at-least-2x rate gates; raw
+telemetry and private rates remain local. Lap reconstruction and coaching begin in v0.3.
 
 - [Product and engineering design](docs/superpowers/specs/2026-07-19-apexlab-desktop-design.md)
 - [30-week roadmap](docs/apexlab-roadmap.md)
