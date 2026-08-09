@@ -11,6 +11,81 @@ public static class F125BahrainPacketDecoder
 
     private static readonly F125TelemetryProtocolAdapter Adapter = new();
 
+    public static F125DecodeResult<F125EventData> DecodeEvent(
+        ReadOnlySpan<byte> datagram)
+    {
+        const byte packetId = 3;
+        const uint sessionStartedCode = 0x41545353;
+        const uint sessionEndedCode = 0x444E4553;
+        const uint flashbackCode = 0x4B424C46;
+
+        var gate = Validate(datagram, packetId);
+        if (!gate.IsValid)
+        {
+            return RejectGate<F125EventData>(gate);
+        }
+
+        var header = gate.Header!.Value;
+        if (!LittleEndianFieldReader.TryReadAscii4(
+                datagram,
+                29,
+                out var eventCode)
+            || !IsAscii4(eventCode))
+        {
+            return F125DecodeResult<F125EventData>.Rejected(
+                F125DecodeReason.MalformedSelectedField,
+                header);
+        }
+
+        if (eventCode == sessionStartedCode)
+        {
+            return F125DecodeResult<F125EventData>.Decoded(
+                new F125EventData(
+                    header,
+                    F125SliceEventKind.SessionStarted),
+                header);
+        }
+
+        if (eventCode == sessionEndedCode)
+        {
+            return F125DecodeResult<F125EventData>.Decoded(
+                new F125EventData(
+                    header,
+                    F125SliceEventKind.SessionEnded),
+                header);
+        }
+
+        if (eventCode != flashbackCode)
+        {
+            return F125DecodeResult<F125EventData>.Ignored(
+                F125DecodeReason.EventCodeOutsideSlice,
+                header);
+        }
+
+        if (!LittleEndianFieldReader.TryReadUInt32(
+                datagram,
+                33,
+                out var flashbackFrameIdentifier)
+            || !LittleEndianFieldReader.TryReadSingle(
+                datagram,
+                37,
+                out var flashbackSessionTimeSeconds)
+            || !float.IsFinite(flashbackSessionTimeSeconds))
+        {
+            return F125DecodeResult<F125EventData>.Rejected(
+                F125DecodeReason.MalformedSelectedField,
+                header);
+        }
+
+        return F125DecodeResult<F125EventData>.Decoded(
+            new F125EventData(
+                header,
+                F125SliceEventKind.Flashback,
+                flashbackFrameIdentifier,
+                flashbackSessionTimeSeconds),
+            header);
+    }
+
     public static F125DecodeResult<F125LapPlayerData> DecodeLapData(
         ReadOnlySpan<byte> datagram)
     {
@@ -307,6 +382,19 @@ public static class F125BahrainPacketDecoder
     }
 
     private static bool IsBinary(byte value) => value <= 1;
+
+    private static bool IsAscii4(uint value)
+    {
+        for (var index = 0; index < sizeof(uint); index++)
+        {
+            if (((value >> (index * 8)) & byte.MaxValue) > 0x7F)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 }
 
 internal readonly record struct F125DecodeGateResult

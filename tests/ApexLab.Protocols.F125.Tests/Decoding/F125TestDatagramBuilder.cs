@@ -54,6 +54,21 @@ internal static class F125TestDatagramBuilder
             unchecked((uint)BitConverter.SingleToInt32Bits(value)));
     }
 
+    public static void WriteAscii4(byte[] destination, int offset, string value)
+    {
+        if (value.Length != 4 || value.Any(character => character > 0x7F))
+        {
+            throw new ArgumentException(
+                "An exact four-character ASCII value is required.",
+                nameof(value));
+        }
+
+        for (var index = 0; index < value.Length; index++)
+        {
+            destination[offset + index] = (byte)value[index];
+        }
+    }
+
     private static void WriteUInt64(byte[] destination, int offset, ulong value)
     {
         for (var index = 0; index < sizeof(ulong); index++)
