@@ -40,7 +40,8 @@ a planning target, never permission to weaken a quality gate.
 
 ## GitHub Project
 
-The **ApexLab Diploma Roadmap** Project is the live planning surface:
+The [**ApexLab Diploma Roadmap**](https://github.com/users/DarianGanev/projects/2) Project is the live
+planning surface:
 
 - **Backlog** exposes open issues and priority.
 - **Kanban** tracks active issues and pull requests through Status.
