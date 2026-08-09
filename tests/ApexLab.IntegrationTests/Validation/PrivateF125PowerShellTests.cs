@@ -545,6 +545,42 @@ public sealed class PrivateF125PowerShellTests
     }
 
     [TestMethod]
+    public async Task ResolvesTheReleaseArtifactsProducedByTheSolutionBuild()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        using var result = await InvokeModuleAsync(
+            "$module=Get-Module PrivateF125Validation; $value=& $module { "
+            + "param($repo) Get-ApexLabReleaseValidationPaths "
+            + "-RepositoryRoot $repo } $env:APEXLAB_REPOSITORY; "
+            + "$value | ConvertTo-Json -Compress",
+            new Dictionary<string, string>
+            {
+                ["APEXLAB_REPOSITORY"] = repositoryRoot,
+            });
+
+        Assert.AreEqual(0, result.ExitCode, result.StandardError);
+        using var document = JsonDocument.Parse(result.StandardOutput);
+        var applicationPath = document.RootElement
+            .GetProperty("ApplicationPath")
+            .GetString();
+        var replayPath = document.RootElement
+            .GetProperty("ReplayPath")
+            .GetString();
+        var soakPath = document.RootElement
+            .GetProperty("SoakPath")
+            .GetString();
+        Assert.IsNotNull(applicationPath);
+        Assert.IsNotNull(replayPath);
+        Assert.IsNotNull(soakPath);
+        Assert.AreEqual("ApexLab.App.exe", Path.GetFileName(applicationPath));
+        Assert.AreEqual("ApexLab.Replay.exe", Path.GetFileName(replayPath));
+        Assert.AreEqual("CaptureSoak.ps1", Path.GetFileName(soakPath));
+        Assert.IsTrue(File.Exists(applicationPath), applicationPath);
+        Assert.IsTrue(File.Exists(replayPath), replayPath);
+        Assert.IsTrue(File.Exists(soakPath), soakPath);
+    }
+
+    [TestMethod]
     public async Task ResolvesTrustedToolsAndRejectsWritableSignedCopies()
     {
         var repositoryRoot = FindRepositoryRoot();

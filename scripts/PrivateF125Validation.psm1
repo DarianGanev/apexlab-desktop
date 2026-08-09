@@ -345,11 +345,11 @@ function Invoke-ApexLabProductionPreflight {
                 (Join-Path $repositoryRoot 'scripts/Verify.ps1'),
                 '-GitPath', $tools.GitPath,
                 '-DotNetPath', $tools.DotNetPath))
-        $applicationPath = Join-Path $repositoryRoot (
-            'src/ApexLab.App/bin/Release/net10.0-windows/ApexLab.exe')
-        $replayPath = Join-Path $repositoryRoot (
-            'tools/ApexLab.Replay/bin/Release/net10.0-windows/ApexLab.Replay.exe')
-        $soakPath = Join-Path $repositoryRoot 'scripts/CaptureSoak.ps1'
+        $releasePaths = Get-ApexLabReleaseValidationPaths `
+            -RepositoryRoot $repositoryRoot
+        $applicationPath = $releasePaths.ApplicationPath
+        $replayPath = $releasePaths.ReplayPath
+        $soakPath = $releasePaths.SoakPath
         foreach ($path in @($applicationPath, $replayPath, $soakPath)) {
             if (![IO.File]::Exists($path)) {
                 throw "A required Release validation file is unavailable."
@@ -392,6 +392,19 @@ function Invoke-ApexLabProductionPreflight {
             -RunRoot $runRoot `
             -PrivateRoot $privateRoot
         throw
+    }
+}
+
+function Get-ApexLabReleaseValidationPaths {
+    param([Parameter(Mandatory)] [string] $RepositoryRoot)
+
+    $repositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
+    return [pscustomobject][ordered]@{
+        ApplicationPath = Join-Path $repositoryRoot (
+            'src/ApexLab.App/bin/Release/net10.0-windows/ApexLab.App.exe')
+        ReplayPath = Join-Path $repositoryRoot (
+            'tools/ApexLab.Replay/bin/Release/net10.0-windows/ApexLab.Replay.exe')
+        SoakPath = Join-Path $repositoryRoot 'scripts/CaptureSoak.ps1'
     }
 }
 
