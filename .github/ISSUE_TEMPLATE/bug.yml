@@ -1,0 +1,65 @@
+name: Bug or regression
+description: Report incorrect behavior with sanitized reproduction evidence.
+title: "[Bug] "
+labels:
+  - "type:bug"
+body:
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Give the smallest deterministic sequence that triggers the problem.
+      placeholder: |
+        1. Start ...
+        2. Perform ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact and safety boundary
+      description: Explain user impact, data risk, privacy risk, and whether this blocks a release.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Record sanitized app version, Windows version, game/protocol mode, and relevant settings.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Include safe logs or counters only; do not attach raw telemetry or private identifiers.
+    validations:
+      required: true
+  - type: textarea
+    id: regression
+    attributes:
+      label: Regression acceptance criteria
+      description: Define the failing test and the exact evidence that proves the fix.
+      placeholder: "- [ ] A regression test fails before the fix and passes afterward."
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      description: Confirm that the report contains no raw telemetry, exact private rates, identifiers, or paths.
+    validations:
+      required: true

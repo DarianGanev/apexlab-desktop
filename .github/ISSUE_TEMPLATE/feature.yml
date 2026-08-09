@@ -1,0 +1,70 @@
+name: Feature or engineering slice
+description: Define one testable product behavior or engineering deliverable.
+title: "[Feature] "
+labels:
+  - "type:feature"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep the issue narrow enough for one reviewed pull request. Link the active release epic.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and outcome
+      description: What problem exists, and what observable outcome will resolve it?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: In scope
+      description: List the exact behavior and engineering boundaries included.
+    validations:
+      required: true
+  - type: textarea
+    id: non_scope
+    attributes:
+      label: Explicit non-scope
+      description: List adjacent behavior this issue must not grow into.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Provide measurable checkboxes that define completion.
+      placeholder: "- [ ] Given ..., when ..., then ..."
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence gate
+      description: Name the automated, synthetic, replay, performance, or private evidence required.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and ordering
+      description: Link blockers, prerequisites, the release epic, and downstream consumers.
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P1 - required for the active milestone
+        - P2 - valuable but not release-blocking yet
+        - P3 - explicitly deferred
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy and local-data impact
+      description: State what data is read, retained, exported, or explicitly excluded.
+    validations:
+      required: true
