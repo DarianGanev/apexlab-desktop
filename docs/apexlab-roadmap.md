@@ -27,7 +27,8 @@ This roadmap fits the product into roughly seven months and reserves weeks 29-30
 
 - Bounds-checked little-endian primitive reader and exact 29-byte F1 25 header decoder.
 - Loopback UDP receiver, bounded channel, packet-size/rate counters, and safe cancellation.
-- Opaque accepted-datagram recording with arrival metadata; payload decoding is not required to retain evidence.
+- One bounded, uncompressed opaque evidence file with arrival metadata and deterministic replay;
+  production compression, chunk rotation, recovery, indexing, and quota management remain v0.4.
 - Deterministic raw replay and small independently authored header fixtures.
 - F1 configuration wizard with distinct port/no-traffic/unsupported-format states.
 
@@ -41,6 +42,8 @@ This roadmap fits the product into roughly seven months and reserves weeks 29-30
 This gate prevents fixtures and code derived from the same mistaken interpretation from validating each other.
 
 **Release:** `v0.2.0`
+
+**Implementation plan:** [`2026-07-24-apexlab-v0.2-capture-evidence.md`](superpowers/plans/2026-07-24-apexlab-v0.2-capture-evidence.md)
 
 ## Weeks 5-9: Provisional Bahrain coaching vertical slice
 

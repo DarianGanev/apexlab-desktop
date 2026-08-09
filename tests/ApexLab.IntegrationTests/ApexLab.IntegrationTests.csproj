@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\ApexLab.App\ApexLab.App.csproj" />
+    <ProjectReference Include="..\..\tools\ApexLab.Replay\ApexLab.Replay.csproj" />
   </ItemGroup>
 
 </Project>

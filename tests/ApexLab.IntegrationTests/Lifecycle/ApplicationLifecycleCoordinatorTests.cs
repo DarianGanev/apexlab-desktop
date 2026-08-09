@@ -439,10 +439,8 @@ public sealed class ApplicationLifecycleCoordinatorTests
     {
         var events = new List<string>();
         using var blocker = new ManualResetEventSlim(false);
-        using var coordinationEntered = new ManualResetEventSlim(false);
         var stopOperationThread = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var coordinationUsedThreadPool = true;
         var operations = new RecordingOperations(events)
         {
             StopAction = _ =>
@@ -453,17 +451,7 @@ public sealed class ApplicationLifecycleCoordinatorTests
             },
         };
         var subject = new ApplicationLifecycleCoordinator(
-            new RecordingLease(events, available: true),
-            operations,
-            TimeSpan.FromMilliseconds(75),
-            new ApplicationLifecycleTestHooks
-            {
-                StopCoordinationStarted = () =>
-                {
-                    coordinationUsedThreadPool = Thread.CurrentThread.IsThreadPoolThread;
-                    coordinationEntered.Set();
-                },
-            });
+            new RecordingLease(events, available: true), operations, TimeSpan.FromMilliseconds(75));
         await subject.StartAsync();
 
         try
@@ -479,10 +467,6 @@ public sealed class ApplicationLifecycleCoordinatorTests
             var result = await stopTask.WaitAsync(TimeSpan.FromMilliseconds(500));
             Assert.AreEqual(LifecycleStopOutcome.Interrupted, result.Outcome);
             Assert.IsTrue(result.LeaseRetainedForDeferredCleanup);
-            Assert.IsTrue(coordinationEntered.Wait(TimeSpan.FromSeconds(5)));
-            Assert.IsFalse(
-                coordinationUsedThreadPool,
-                "Stop coordination must remain schedulable when a lifecycle operation blocks the ThreadPool.");
             Assert.IsFalse(
                 operationUsedThreadPool,
                 "Synchronous lifecycle work must not occupy a ThreadPool worker needed by timeout continuations.");

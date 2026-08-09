@@ -76,14 +76,14 @@ public sealed class MutexSingleInstanceLeaseTests
     }
 
     [TestMethod]
-    [Timeout(20_000, CooperativeCancellation = true)]
+    [Timeout(15_000, CooperativeCancellation = true)]
     public async Task Concurrent_acquirers_share_result_and_release_waits_for_inflight_callers()
     {
-        var cancellationToken = TestContext.CancellationToken;
+        var coordinationTimeout = TimeSpan.FromSeconds(5);
         using var ownerReached = new ManualResetEventSlim(false);
         using var publishResult = new ManualResetEventSlim(false);
-        using var releaseWaitingForCallers = new ManualResetEventSlim(false);
         using var bothCallersEntered = new CountdownEvent(2);
+        using var releaseWaitingForAcquirers = new ManualResetEventSlim(false);
         var identity = $"ApexLab.Tests.{Guid.NewGuid():N}";
         using var subject = new MutexSingleInstanceLease(
             identity,
@@ -94,74 +94,56 @@ public sealed class MutexSingleInstanceLeaseTests
                 BeforePublishingAcquisition = () =>
                 {
                     ownerReached.Set();
-                    publishResult.Wait(cancellationToken);
+                    publishResult.Wait();
                 },
-                BeforeWaitingForInflightAcquirers = releaseWaitingForCallers.Set,
+                ReleaseWaitingForAcquirers = releaseWaitingForAcquirers.Set,
             });
-        using var callersReady = new CountdownEvent(2);
-        using var startCallers = new ManualResetEventSlim(false);
+        using var callersReady = new Barrier(3);
 
-        Task<bool>? first = null;
-        Task<bool>? second = null;
-        Task? release = null;
-        try
-        {
-            first = StartDedicatedCaller();
-            second = StartDedicatedCaller();
-            Assert.IsTrue(callersReady.Wait(TimeSpan.FromSeconds(5), cancellationToken));
-            startCallers.Set();
-            Assert.IsTrue(bothCallersEntered.Wait(TimeSpan.FromSeconds(5), cancellationToken));
-            Assert.IsTrue(ownerReached.Wait(TimeSpan.FromSeconds(5), cancellationToken));
-            release = Task.Factory.StartNew(
-                subject.Release,
-                CancellationToken.None,
-                TaskCreationOptions.LongRunning,
-                TaskScheduler.Default);
-            Assert.IsTrue(releaseWaitingForCallers.Wait(TimeSpan.FromSeconds(5), cancellationToken));
-
-            publishResult.Set();
-
-            Assert.IsTrue(await first.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken));
-            Assert.IsTrue(await second.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken));
-            await release.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
-        }
-        finally
-        {
-            startCallers.Set();
-            publishResult.Set();
-            await ObserveForCleanupAsync(first);
-            await ObserveForCleanupAsync(second);
-            await ObserveForCleanupAsync(release);
-        }
-
-        Task<bool> StartDedicatedCaller() => Task.Factory.StartNew(
+        var first = Task.Factory.StartNew(
             () =>
             {
-                callersReady.Signal();
-                Assert.IsTrue(startCallers.Wait(TimeSpan.FromSeconds(5), cancellationToken));
+                Assert.IsTrue(callersReady.SignalAndWait(coordinationTimeout));
                 return subject.TryAcquire();
             },
             CancellationToken.None,
-            TaskCreationOptions.LongRunning,
+            TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
-
-        static async Task ObserveForCleanupAsync(Task? task)
+        var second = Task.Factory.StartNew(
+            () =>
+            {
+                Assert.IsTrue(callersReady.SignalAndWait(coordinationTimeout));
+                return subject.TryAcquire();
+            },
+            CancellationToken.None,
+            TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+        Task? release = null;
+        try
         {
-            if (task is null)
-            {
-                return;
-            }
+            Assert.IsTrue(callersReady.SignalAndWait(coordinationTimeout));
+            Assert.IsTrue(bothCallersEntered.Wait(coordinationTimeout));
+            Assert.IsTrue(ownerReached.Wait(coordinationTimeout));
+            release = Task.Factory.StartNew(
+                subject.Release,
+                CancellationToken.None,
+                TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+            Assert.IsTrue(releaseWaitingForAcquirers.Wait(coordinationTimeout));
 
-            try
-            {
-                await task.WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch (Exception)
-            {
-                // Preserve the primary test failure while ensuring every started task is observed.
-            }
+            publishResult.Set();
+
+            Assert.IsTrue(await first.WaitAsync(coordinationTimeout));
+            Assert.IsTrue(await second.WaitAsync(coordinationTimeout));
+            await release.WaitAsync(coordinationTimeout);
+        }
+        finally
+        {
+            publishResult.Set();
+            var startedActors = release is null
+                ? new Task[] { first, second }
+                : [first, second, release];
+            await Task.WhenAll(startedActors).WaitAsync(coordinationTimeout);
         }
     }
-
-    public TestContext TestContext { get; set; }
 }

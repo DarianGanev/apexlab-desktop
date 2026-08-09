@@ -82,9 +82,9 @@ jobs:
       - name: Upload Windows package and checksum
         uses: actions/upload-artifact@v6
         with:
-          name: apexlab-v0.1.0-win-x64
+          name: apexlab-v${{ steps.version.outputs.version }}-win-x64
           path: |
-            artifacts/ApexLab-0.1.0-win-x64.zip
-            artifacts/ApexLab-0.1.0-win-x64.zip.sha256
+            artifacts/ApexLab-${{ steps.version.outputs.version }}-win-x64.zip
+            artifacts/ApexLab-${{ steps.version.outputs.version }}-win-x64.zip.sha256
           if-no-files-found: error
           retention-days: 14

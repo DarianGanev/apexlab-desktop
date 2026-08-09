@@ -1,4 +1,7 @@
+using ApexLab.App.Capture;
+using ApexLab.App.Lifecycle;
 using ApexLab.App.Shell;
+using ApexLab.Application.Capture;
 using ApexLab.Application.Configuration;
 using ApexLab.Application.Storage;
 using ApexLab.Persistence.Configuration;
@@ -53,6 +56,27 @@ public static class AppComposition
 
         services.AddSingleton(defaults);
         services.AddSingleton<ISettingsStore, JsonSettingsStore>();
+        services.AddSingleton<ICaptureSessionFactory, DesktopCaptureSessionFactory>();
+        services.AddSingleton<ICaptureWorkflow>(
+            provider => new CaptureWorkflow(
+                provider.GetRequiredService<ICaptureSessionFactory>(),
+                TimeSpan.FromSeconds(5)));
+        services.AddSingleton<CaptureLifecycleOperations>();
+        services.AddSingleton<IApplicationLifecycleOperations>(
+            provider =>
+                provider.GetRequiredService<CaptureLifecycleOperations>());
+        var lease = new MutexSingleInstanceLease("ApexLab.Desktop");
+        services.AddSingleton<ISingleInstanceLease>(lease);
+        services.AddSingleton(
+            provider => new ApplicationLifecycleCoordinator(
+                provider.GetRequiredService<ISingleInstanceLease>(),
+                provider.GetRequiredService<IApplicationLifecycleOperations>(),
+                TimeSpan.FromSeconds(5)));
+        services.AddSingleton<ApplicationLifecycleHostedService>();
+        services.AddSingleton<IHostedService>(
+            provider =>
+                provider.GetRequiredService<ApplicationLifecycleHostedService>());
+        services.AddSingleton<CaptureViewModel>();
         services.AddSingleton<ShellViewModel>();
         services.AddSingleton<MainWindow>();
     }

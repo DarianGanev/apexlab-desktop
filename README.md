@@ -8,8 +8,11 @@ This is a personal software-engineering diploma project, not a startup MVP. Its 
 
 The native Windows foundation is executable and tested: it includes the WPF shell, validated local
 settings, single-instance lifecycle coordination, safe SQLite schema migration, headless package
-smoke testing, and reproducible verification/packaging scripts. F1 telemetry product features are
-the next milestone.
+smoke testing, reproducible verification/packaging scripts, strict base-F1-25 packet-envelope
+validation, bounded loopback UDP reception, a privacy-safe live traffic probe, integrity-bound raw
+evidence capture, and deterministic replay. A private real-game F1 25 Time Trial run has passed the
+guided manifest, replay, sequence-gap, privacy, protocol-assumption, and at-least-2x rate gates; raw
+telemetry and private rates remain local. Lap reconstruction and coaching begin in v0.3.
 
 - [Product and engineering design](docs/superpowers/specs/2026-07-19-apexlab-desktop-design.md)
 - [30-week roadmap](docs/apexlab-roadmap.md)
@@ -57,6 +60,51 @@ Run the desktop shell from source with:
 ```powershell
 dotnet run --project src/ApexLab.App/ApexLab.App.csproj -c Release
 ```
+
+## F1 25 traffic probe
+
+Configure F1 25 for base F1 25 UDP mode at `127.0.0.1:20777`, then run a short offline Time Trial
+while this command is active:
+
+```powershell
+dotnet run --project tools/ApexLab.Replay/ApexLab.Replay.csproj -c Release -- probe --duration-seconds 30
+```
+
+The probe uses the same bounded UDP source, sender policy, F1 adapter, and ingestion coordinator
+planned for the desktop capture workflow. It retains no packet payload and prints aggregate JSON
+only: classifier counts, packet ID/version/length counts, rate buckets, session-UID cardinality,
+sequence/timestamp regressions, skipped frame-identifier values, frame regressions, and player-index
+ranges. Skipped frame identifiers are descriptive deltas per packet family, not packet-loss claims.
+The probe never prints an actual session UID, sender endpoint, local path, username, or payload byte.
+
+Exit codes are `0` for compatible traffic, `2` for invalid arguments, `3` for bind failure, `4` for
+no traffic, `5` for incompatible-only traffic, `6` for interruption, and `7` for an unexpected
+failure. Optional arguments are `--port`, `--capacity`, `--max-datagram-bytes`, and
+`--duration-seconds`.
+
+## Private F1 25 validation
+
+Use the guided validator when you are ready to test against your own F1 25 installation. Start F1
+25 first, select an offline Time Trial, enable UDP using base F1 25 v3 at
+`127.0.0.1:20777`, and keep ApexLab closed. From a clean feature-branch worktree, run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ValidatePrivateF125.ps1 -GameBuild "your F1 25 build"
+```
+
+The command performs these stages: `preflight`, `probe`, `probeEvaluation`, `capture`,
+`captureSelection`, `privateValidation`, `rateGate`, and `safeSummary`. Drive during the 30-second
+probe. When the native ApexLab window opens, arm and stop exactly one capture, then close ApexLab.
+The command validates that capture twice, checks sequence-gap preservation and privacy exclusions,
+and finishes with a measured synthetic rate gate of at least twice the observed real peak.
+
+On failure, read the printed stage and correction, fix that item, and run the same command again.
+Raw telemetry is preserved locally, while temporary diagnostics are removed. A passing commit-safe
+result is stored at `%LOCALAPPDATA%\ApexLab\private-validation\latest-safe.json`; it contains no
+capture ID, hash, path, sender, session UID, payload, or exact private rate.
+
+This procedure needs no phone, SIM card, cloud account, API key, paid service, or internet upload.
+The Android phone is not part of this Windows capture-validation step.
 
 ## Package and smoke test
 

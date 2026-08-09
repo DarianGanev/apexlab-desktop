@@ -1,9 +1,13 @@
 using ApexLab.App;
+using ApexLab.App.Capture;
+using ApexLab.App.Lifecycle;
 using ApexLab.App.Shell;
+using ApexLab.Application.Capture;
 using ApexLab.Application.Configuration;
 using ApexLab.Persistence.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace ApexLab.IntegrationTests.Shell;
 
@@ -25,6 +29,27 @@ public sealed class AppCompositionTests
         Assert.AreSame(
             host.Services.GetRequiredService<ShellViewModel>(),
             host.Services.GetRequiredService<ShellViewModel>());
+        Assert.AreSame(
+            host.Services.GetRequiredService<ICaptureWorkflow>(),
+            host.Services.GetRequiredService<ICaptureWorkflow>());
+        Assert.IsInstanceOfType<DesktopCaptureSessionFactory>(
+            host.Services.GetRequiredService<ICaptureSessionFactory>());
+        Assert.AreSame(
+            host.Services.GetRequiredService<CaptureLifecycleOperations>(),
+            host.Services.GetRequiredService<IApplicationLifecycleOperations>());
+        Assert.IsInstanceOfType<MutexSingleInstanceLease>(
+            host.Services.GetRequiredService<ISingleInstanceLease>());
+        Assert.AreSame(
+            host.Services.GetRequiredService<ApplicationLifecycleCoordinator>(),
+            host.Services.GetRequiredService<ApplicationLifecycleHostedService>().Coordinator);
+        var hostedServices = host.Services.GetServices<IHostedService>().ToArray();
+        Assert.HasCount(1, hostedServices);
+        Assert.AreSame(
+            host.Services.GetRequiredService<ApplicationLifecycleHostedService>(),
+            hostedServices[0]);
+        Assert.AreNotEqual(
+            typeof(CaptureLifecycleOperations),
+            hostedServices[0].GetType());
         Assert.IsFalse(Directory.Exists(localApplicationData));
     }
 
@@ -77,7 +102,7 @@ public sealed class AppCompositionTests
         var codeBehind = File.ReadAllText(Path.Combine(repositoryRoot, "src", "ApexLab.App", "MainWindow.xaml.cs"));
 
         Assert.IsFalse(xaml.Contains("<Window.DataContext>", StringComparison.Ordinal));
-        StringAssert.Contains(codeBehind, "MainWindow(ShellViewModel viewModel)");
+        StringAssert.Contains(codeBehind, "CaptureViewModel capture");
         StringAssert.Contains(codeBehind, "DataContext = viewModel;");
     }
 

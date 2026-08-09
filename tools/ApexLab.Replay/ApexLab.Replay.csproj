@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ApexLab.Application\ApexLab.Application.csproj" />
+    <ProjectReference Include="..\..\src\ApexLab.Persistence\ApexLab.Persistence.csproj" />
+    <ProjectReference Include="..\..\src\ApexLab.Protocols.F125\ApexLab.Protocols.F125.csproj" />
+    <ProjectReference Include="..\..\src\ApexLab.Telemetry\ApexLab.Telemetry.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+  </PropertyGroup>
+
+</Project>
