@@ -20,6 +20,7 @@ public sealed class ApplicationPathsTests
         Assert.AreEqual(Path.Combine(expectedRoot, "apexlab.db"), paths.DatabaseFile);
         Assert.AreEqual(Path.Combine(expectedRoot, "captures"), paths.RawCapturesDirectory);
         Assert.AreEqual(Path.Combine(expectedRoot, "cache"), paths.DerivedCacheDirectory);
+        Assert.AreEqual(Path.Combine(expectedRoot, "lap-audits"), paths.LapAuditsDirectory);
         Assert.AreEqual(Path.Combine(expectedRoot, "logs"), paths.LogsDirectory);
         Assert.AreEqual(Path.Combine(expectedRoot, "backups"), paths.BackupsDirectory);
         Assert.AreEqual(Path.Combine(expectedRoot, "import-staging"), paths.ImportStagingDirectory);
