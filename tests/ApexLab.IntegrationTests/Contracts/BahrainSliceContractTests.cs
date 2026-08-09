@@ -1,5 +1,8 @@
 using System.Text.Json;
+using ApexLab.Application.Canonical;
+using ApexLab.Protocols.F125.Canonical;
 using ApexLab.Protocols.F125.Decoding;
+using ApexLab.Telemetry.Abstractions.Canonical;
 using ApexLab.Telemetry.Abstractions.Protocol;
 
 namespace ApexLab.IntegrationTests.Contracts;
@@ -417,6 +420,102 @@ public sealed class BahrainSliceContractTests
             ("Gear", typeof(sbyte)));
     }
 
+    [TestMethod]
+    public void Production_canonical_replay_ids_and_surface_match_the_frozen_contract()
+    {
+        using var document = LoadJson("contracts/v0.3/bahrain-slice-v1.json");
+        var root = document.RootElement;
+        var versions = root.GetProperty("versionIds");
+        var projector = new F125BahrainCanonicalProjector();
+
+        Assert.AreEqual(
+            root.GetProperty("protocolSource").GetProperty("adapterId").GetString(),
+            projector.ProtocolId);
+        Assert.AreEqual(
+            versions.GetProperty("contractId").GetString(),
+            projector.ContractId);
+        Assert.AreEqual(
+            versions.GetProperty("decoderId").GetString(),
+            projector.DecoderId);
+        Assert.AreEqual(
+            versions.GetProperty("canonicalSchemaId").GetString(),
+            projector.CanonicalSchemaId);
+
+        var identity = new CanonicalReplayIdentity(
+            new string('a', 64),
+            projector.ProtocolId,
+            projector.ContractId,
+            projector.DecoderId,
+            projector.CanonicalSchemaId);
+        Assert.AreEqual(projector.ProtocolId, identity.ProtocolId);
+        Assert.AreEqual(projector.ContractId, identity.ContractId);
+        Assert.AreEqual(projector.DecoderId, identity.DecoderId);
+        Assert.AreEqual(projector.CanonicalSchemaId, identity.CanonicalSchemaId);
+
+        AssertProperties<CanonicalPacketHeader>(
+            ("SessionTimeSeconds", typeof(float)),
+            ("FrameIdentifier", typeof(uint)),
+            ("OverallFrameIdentifier", typeof(uint)),
+            ("PlayerCarIndex", typeof(byte)),
+            ("SecondaryPlayerCarIndex", typeof(byte)));
+        AssertProperties<CanonicalMotionPacket>(
+            ("WorldPositionXMetres", typeof(float)),
+            ("WorldPositionYMetres", typeof(float)),
+            ("WorldPositionZMetres", typeof(float)));
+        AssertProperties<CanonicalSessionPacket>(
+            ("Weather", typeof(byte)),
+            ("TrackTemperatureCelsius", typeof(sbyte)),
+            ("AirTemperatureCelsius", typeof(sbyte)),
+            ("TrackLengthMetres", typeof(ushort)),
+            ("SessionType", typeof(byte)),
+            ("TrackId", typeof(sbyte)),
+            ("Formula", typeof(byte)),
+            ("IsSpectating", typeof(bool)),
+            ("IsNetworkGame", typeof(bool)),
+            ("SteeringAssist", typeof(byte)),
+            ("BrakingAssist", typeof(byte)),
+            ("GearboxAssist", typeof(byte)),
+            ("PitAssist", typeof(byte)),
+            ("PitReleaseAssist", typeof(byte)),
+            ("ErsAssist", typeof(byte)),
+            ("DrsAssist", typeof(byte)),
+            ("DynamicRacingLine", typeof(byte)),
+            ("DynamicRacingLineType", typeof(byte)),
+            ("GameMode", typeof(byte)),
+            ("RuleSet", typeof(byte)),
+            ("TimeOfDayMinutesSinceMidnight", typeof(uint)),
+            ("EqualCarPerformance", typeof(bool)),
+            ("RecoveryMode", typeof(byte)));
+        AssertProperties<CanonicalLapPacket>(
+            ("LastLapTimeMilliseconds", typeof(uint)),
+            ("CurrentLapTimeMilliseconds", typeof(uint)),
+            ("LapDistanceMetres", typeof(float)),
+            ("TotalDistanceMetres", typeof(float)),
+            ("CurrentLapNumber", typeof(byte)),
+            ("PitStatus", typeof(byte)),
+            ("Sector", typeof(byte)),
+            ("CurrentLapInvalid", typeof(bool)),
+            ("DriverStatus", typeof(byte)),
+            ("ResultStatus", typeof(byte)));
+        AssertProperties<CanonicalEventPacket>(
+            ("Kind", typeof(CanonicalEventKind)),
+            ("FlashbackFrameIdentifier", typeof(uint?)),
+            ("FlashbackSessionTimeSeconds", typeof(float?)));
+        AssertProperties<CanonicalCarTelemetryPacket>(
+            ("SpeedKilometresPerHour", typeof(ushort)),
+            ("ThrottleRatio", typeof(float)),
+            ("BrakeRatio", typeof(float)),
+            ("Gear", typeof(sbyte)));
+        AssertProperties<CanonicalPacket>(
+            ("Family", typeof(CanonicalPacketFamily)),
+            ("Header", typeof(CanonicalPacketHeader)),
+            ("Motion", typeof(CanonicalMotionPacket?)),
+            ("Session", typeof(CanonicalSessionPacket?)),
+            ("Lap", typeof(CanonicalLapPacket?)),
+            ("Event", typeof(CanonicalEventPacket?)),
+            ("CarTelemetry", typeof(CanonicalCarTelemetryPacket?)));
+    }
+
     private static void AssertAttachment(JsonElement attachment, string name, int bytes, string sha256)
     {
         Assert.AreEqual(name, attachment.GetProperty("name").GetString());
@@ -446,6 +545,11 @@ public sealed class BahrainSliceContractTests
             "CaptureId",
             "Sha256",
             "SessionUid",
+            "ReceivedAtUtc",
+            "MonotonicTimestamp",
+            "DataLeafName",
+            "DataSha256",
+            "CanonicalSha256",
         ];
         var names = actual.Select(property => property.Name).ToArray();
         foreach (var name in forbidden)
