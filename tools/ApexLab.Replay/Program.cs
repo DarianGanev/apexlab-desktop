@@ -1,4 +1,5 @@
 using ApexLab.Replay.BahrainValidation;
+using ApexLab.Replay.CanonicalValidation;
 using ApexLab.Replay.Probe;
 using ApexLab.Replay.Replay;
 using ApexLab.Replay.Validation;
@@ -13,6 +14,15 @@ ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
 Console.CancelKeyPress += cancelHandler;
 try
 {
+    if (args.Length != 0 && args[0] == "validate-canonical-replay")
+    {
+        var validation = await CanonicalReplayValidationCommand.ExecuteAsync(
+            args,
+            interruption.Token);
+        await Console.Out.WriteLineAsync(validation.Json);
+        return (int)validation.ExitCode;
+    }
+
     if (args.Length != 0 && args[0] == "validate-bahrain-decoder")
     {
         var validation = await BahrainDecoderValidationCommand.ExecuteAsync(
