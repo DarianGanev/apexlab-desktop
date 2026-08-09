@@ -11,6 +11,91 @@ public static class F125BahrainPacketDecoder
 
     private static readonly F125TelemetryProtocolAdapter Adapter = new();
 
+    public static F125DecodeResult<F125LapPlayerData> DecodeLapData(
+        ReadOnlySpan<byte> datagram)
+    {
+        const byte packetId = 2;
+        const int arrayBaseOffset = 29;
+        const int stride = 57;
+
+        var gate = Validate(datagram, packetId);
+        if (!gate.IsValid)
+        {
+            return RejectGate<F125LapPlayerData>(gate);
+        }
+
+        var header = gate.Header!.Value;
+        var memberBase = checked(
+            arrayBaseOffset + (header.PlayerCarIndex * stride));
+        if (!LittleEndianFieldReader.TryReadUInt32(
+                datagram,
+                memberBase,
+                out var lastLapTimeMilliseconds)
+            || !LittleEndianFieldReader.TryReadUInt32(
+                datagram,
+                memberBase + 4,
+                out var currentLapTimeMilliseconds)
+            || !LittleEndianFieldReader.TryReadSingle(
+                datagram,
+                memberBase + 20,
+                out var lapDistanceMetres)
+            || !LittleEndianFieldReader.TryReadSingle(
+                datagram,
+                memberBase + 24,
+                out var totalDistanceMetres)
+            || !LittleEndianFieldReader.TryReadByte(
+                datagram,
+                memberBase + 33,
+                out var currentLapNumber)
+            || !LittleEndianFieldReader.TryReadByte(
+                datagram,
+                memberBase + 34,
+                out var pitStatus)
+            || !LittleEndianFieldReader.TryReadByte(
+                datagram,
+                memberBase + 36,
+                out var sector)
+            || !LittleEndianFieldReader.TryReadByte(
+                datagram,
+                memberBase + 37,
+                out var currentLapInvalid)
+            || !LittleEndianFieldReader.TryReadByte(
+                datagram,
+                memberBase + 44,
+                out var driverStatus)
+            || !LittleEndianFieldReader.TryReadByte(
+                datagram,
+                memberBase + 45,
+                out var resultStatus)
+            || !float.IsFinite(lapDistanceMetres)
+            || !float.IsFinite(totalDistanceMetres)
+            || pitStatus > 2
+            || sector > 2
+            || !IsBinary(currentLapInvalid)
+            || driverStatus > 4
+            || resultStatus > 7)
+        {
+            return F125DecodeResult<F125LapPlayerData>.Rejected(
+                F125DecodeReason.MalformedSelectedField,
+                header);
+        }
+
+        return F125DecodeResult<F125LapPlayerData>.Decoded(
+            new F125LapPlayerData(
+                header,
+                lastLapTimeMilliseconds,
+                currentLapTimeMilliseconds,
+                lapDistanceMetres,
+                totalDistanceMetres,
+                currentLapNumber,
+                pitStatus,
+                sector,
+                currentLapInvalid == 1,
+                driverStatus,
+                resultStatus),
+            header);
+    }
+
     public static F125DecodeResult<F125SessionData> DecodeSession(
         ReadOnlySpan<byte> datagram)
     {
