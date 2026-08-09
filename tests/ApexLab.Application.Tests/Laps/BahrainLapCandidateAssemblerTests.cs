@@ -85,17 +85,35 @@ public sealed class BahrainLapCandidateAssemblerTests
         var pit = await CompletedCandidateAsync(
             Lap(4, lapNumber: 2, pitStatus: 1));
         var flashback = await CompletedCandidateAsync(Event(4));
-        var gap = await CompletedCandidateAsync(
+
+        AssertFlag(invalid, LapEvidenceFlags.InvalidationObserved);
+        AssertFlag(pit, LapEvidenceFlags.PitObserved);
+        AssertFlag(flashback, LapEvidenceFlags.FlashbackObserved);
+    }
+
+    [TestMethod]
+    public async Task OnlyObservationTimeDiscontinuityIsAMaterialGap()
+    {
+        var privacySequenceGap = await CompletedCandidateAsync(
             CanonicalRecord.Gap(
                 4,
                 4,
                 CanonicalGapReason.UnretainedOrMissingSourceRange),
             completionSequence: 5);
+        var delayed = await AssembleAsync(
+        [
+            Session(1),
+            Lap(2, 1),
+            Lap(3, 2, 90_000),
+            Lap(4, 2, arrivalTimestamp: 10_000_004),
+            Lap(5, 3, 91_000, arrivalTimestamp: 10_000_005),
+        ]);
+        var delayedComplete = delayed.Candidates.Single(candidate =>
+            candidate.Boundary.Completeness == LapBoundaryCompleteness.Complete);
 
-        AssertFlag(invalid, LapEvidenceFlags.InvalidationObserved);
-        AssertFlag(pit, LapEvidenceFlags.PitObserved);
-        AssertFlag(flashback, LapEvidenceFlags.FlashbackObserved);
-        AssertFlag(gap, LapEvidenceFlags.MaterialGapObserved);
+        Assert.IsFalse(privacySequenceGap.EvidenceFlags.HasFlag(
+            LapEvidenceFlags.MaterialGapObserved));
+        AssertFlag(delayedComplete, LapEvidenceFlags.MaterialGapObserved);
     }
 
     [TestMethod]
@@ -170,6 +188,13 @@ public sealed class BahrainLapCandidateAssemblerTests
         CanonicalRecord[] reordered = [Session(1), Lap(3, 1)];
         await Assert.ThrowsExactlyAsync<BahrainLapAssemblyException>(() =>
             AssembleAsync(reordered));
+        CanonicalRecord[] reversedArrival =
+        [
+            Session(1),
+            Lap(2, 1, arrivalTimestamp: 0),
+        ];
+        await Assert.ThrowsExactlyAsync<BahrainLapAssemblyException>(() =>
+            AssembleAsync(reversedArrival));
 
         CanonicalRecord[] records = [Session(1), Lap(2, 1)];
         var wrongCompletion = Completion(records) with { };
@@ -335,10 +360,11 @@ public sealed class BahrainLapCandidateAssemblerTests
         uint lastLapMilliseconds = 0,
         bool invalid = false,
         byte pitStatus = 0,
-        byte playerIndex = 7) =>
+        byte playerIndex = 7,
+        long? arrivalTimestamp = null) =>
         CanonicalRecord.Observation(
             sequence,
-            sequence,
+            arrivalTimestamp ?? sequence,
             CanonicalPacket.CreateLapData(
                 Header(playerIndex),
                 new CanonicalLapPacket(

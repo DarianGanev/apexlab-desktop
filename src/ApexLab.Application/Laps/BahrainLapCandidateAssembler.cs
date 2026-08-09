@@ -42,6 +42,7 @@ public static class BahrainLapCandidateAssembler
         private long _gapCount;
         private long? _firstSourceSequence;
         private long? _lastSourceSequence;
+        private long? _lastObservationTimestamp;
 
         public AssemblyState(CanonicalCacheCompletion completion) =>
             _completion = completion;
@@ -61,11 +62,6 @@ public static class BahrainLapCandidateAssembler
                     break;
                 case CanonicalRecordKind.Gap:
                     _gapCount++;
-                    if (_segment is not null)
-                    {
-                        _segment.Flags |= LapEvidenceFlags.MaterialGapObserved;
-                    }
-
                     break;
                 default:
                     throw MalformedOrder();
@@ -100,6 +96,7 @@ public static class BahrainLapCandidateAssembler
 
         private void AcceptObservation(CanonicalRecord record)
         {
+            AcceptObservationTimestamp(record);
             var packet = record.Packet
                 ?? throw MalformedOrder();
             var sequence = record.SourceSequence
@@ -126,6 +123,28 @@ public static class BahrainLapCandidateAssembler
                 default:
                     throw MalformedOrder();
             }
+        }
+
+        private void AcceptObservationTimestamp(CanonicalRecord record)
+        {
+            var timestamp = record.ArrivalTimestamp
+                ?? throw MalformedOrder();
+            if (_lastObservationTimestamp is { } previous)
+            {
+                if (timestamp < previous)
+                {
+                    throw MalformedOrder();
+                }
+
+                var elapsed = checked((Int128)timestamp - previous);
+                if (_segment is not null
+                    && elapsed > _completion.SourceStopwatchFrequency)
+                {
+                    _segment.Flags |= LapEvidenceFlags.MaterialGapObserved;
+                }
+            }
+
+            _lastObservationTimestamp = timestamp;
         }
 
         private void AcceptSession(
