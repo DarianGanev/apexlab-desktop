@@ -73,7 +73,7 @@ internal static class BahrainDecoderValidationCommand
                     "FAIL");
             }
 
-            if (!result.HasAllSelectedFamilies)
+            if (!result.HasAllContinuousFamilies)
             {
                 return Evaluation(
                     BahrainDecoderValidationExitCode.IncompleteSlice,

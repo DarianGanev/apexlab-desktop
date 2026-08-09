@@ -76,7 +76,7 @@ public sealed class BahrainDecoderValidationCommandTests
             Arguments(Path.GetTempPath()),
             CancellationToken.None,
             (_, _, _) => Task.FromResult(
-                BahrainDecoderReplayResult.Complete with { EventDecoded = false }));
+                BahrainDecoderReplayResult.Complete with { LapDecoded = false }));
         var rejected = await BahrainDecoderValidationCommand.ExecuteAsync(
             Arguments(Path.GetTempPath()),
             CancellationToken.None,
@@ -89,7 +89,7 @@ public sealed class BahrainDecoderValidationCommandTests
             "incompleteSlice");
         using (var document = JsonDocument.Parse(incomplete.Json))
         {
-            Assert.IsFalse(document.RootElement.GetProperty("selectedEventDecoded").GetBoolean());
+            Assert.IsFalse(document.RootElement.GetProperty("lapDecoded").GetBoolean());
             Assert.IsFalse(document.RootElement.GetProperty("selectedPacketsRejected").GetBoolean());
         }
 
@@ -101,6 +101,22 @@ public sealed class BahrainDecoderValidationCommandTests
         {
             Assert.IsTrue(document.RootElement.GetProperty("selectedPacketsRejected").GetBoolean());
         }
+    }
+
+    [TestMethod]
+    public async Task AbsentAsynchronousEventDoesNotInvalidateContinuousCapture()
+    {
+        var result = await BahrainDecoderValidationCommand.ExecuteAsync(
+            Arguments(Path.GetTempPath()),
+            CancellationToken.None,
+            (_, _, _) => Task.FromResult(
+                BahrainDecoderReplayResult.Complete with { EventDecoded = false }));
+
+        Assert.AreEqual(BahrainDecoderValidationExitCode.Success, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Json);
+        Assert.AreEqual("passed", document.RootElement.GetProperty("status").GetString());
+        Assert.IsFalse(document.RootElement.GetProperty("selectedEventDecoded").GetBoolean());
+        Assert.AreEqual("PASS", document.RootElement.GetProperty("conclusion").GetString());
     }
 
     [TestMethod]

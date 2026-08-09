@@ -157,10 +157,9 @@ internal readonly record struct BahrainDecoderReplayResult(
         CarTelemetryDecoded: true,
         SelectedPacketsRejected: false);
 
-    public bool HasAllSelectedFamilies =>
+    public bool HasAllContinuousFamilies =>
         MotionDecoded
         && SessionDecoded
         && LapDecoded
-        && EventDecoded
         && CarTelemetryDecoded;
 }
