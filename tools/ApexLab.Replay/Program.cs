@@ -15,6 +15,15 @@ ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
 Console.CancelKeyPress += cancelHandler;
 try
 {
+    if (args.Length != 0 && args[0] == "validate-bahrain-lap-audit")
+    {
+        var validation = await BahrainLapAuditValidationCommand.ExecuteAsync(
+            args,
+            interruption.Token);
+        await Console.Out.WriteLineAsync(validation.Json);
+        return (int)validation.ExitCode;
+    }
+
     if (args.Length != 0 && args[0] == "prepare-bahrain-lap-audit")
     {
         var preparation = await BahrainLapAuditPrepareCommand.ExecuteAsync(

@@ -142,7 +142,7 @@ public sealed class RawEvidenceBahrainLapAuditTests
 
     public TestContext TestContext { get; set; } = null!;
 
-    private static BahrainLapAuditDocument Complete(
+    internal static BahrainLapAuditDocument Complete(
         BahrainLapAuditDocument template,
         int includedCompleteCount)
     {
@@ -189,7 +189,7 @@ public sealed class RawEvidenceBahrainLapAuditTests
             entries);
     }
 
-    private static async Task CreateEvidenceAsync(
+    internal static async Task CreateEvidenceAsync(
         ApplicationPaths paths,
         RawEvidenceCaptureId captureId)
     {
@@ -293,7 +293,7 @@ public sealed class RawEvidenceBahrainLapAuditTests
         }
     }
 
-    private static async Task ReplaceAuditAsync(
+    internal static async Task ReplaceAuditAsync(
         ApplicationPaths paths,
         BahrainLapAuditDocument document) =>
         await File.WriteAllBytesAsync(
@@ -306,7 +306,7 @@ public sealed class RawEvidenceBahrainLapAuditTests
     private static string AuditPath(ApplicationPaths paths) =>
         Directory.GetFiles(paths.LapAuditsDirectory).Single();
 
-    private static void DeleteAllEvidence(ApplicationPaths paths)
+    internal static void DeleteAllEvidence(ApplicationPaths paths)
     {
         foreach (var directory in new[]
                  {
@@ -322,7 +322,7 @@ public sealed class RawEvidenceBahrainLapAuditTests
         }
     }
 
-    private sealed class TemporaryRoot : IDisposable
+    internal sealed class TemporaryRoot : IDisposable
     {
         private TemporaryRoot(string path) => Paths = ApplicationPaths.FromRoot(path);
 
