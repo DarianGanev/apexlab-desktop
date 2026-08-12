@@ -65,12 +65,49 @@ public static class RawEvidenceBahrainLapAudit
                 projector,
                 cancellationToken)
             .ConfigureAwait(false);
-        var document = await BahrainLapAuditStore.OpenAsync(
+        var document = await BahrainLapAuditStore.OpenForEvaluationAsync(
                 paths,
                 captureId,
                 cancellationToken)
             .ConfigureAwait(false);
         return BahrainLapAuditEvaluator.Evaluate(inventory, document);
+    }
+
+    public static async Task<BahrainLapAuditEvaluation> CompleteAllEligibleAsync(
+        ApplicationPaths paths,
+        RawEvidenceCaptureId captureId,
+        ICanonicalPacketProjector projector,
+        BahrainLapAuditManualInputs confirmedInputs,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        ArgumentNullException.ThrowIfNull(captureId);
+        ArgumentNullException.ThrowIfNull(projector);
+        ArgumentNullException.ThrowIfNull(confirmedInputs);
+        var inventory = await BuildInventoryAsync(
+                paths,
+                paths,
+                captureId,
+                projector,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var template = await BahrainLapAuditStore.OpenAsync(
+                paths,
+                captureId,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var completed = BahrainLapAuditCompletion.CompleteAllEligible(
+            inventory,
+            template,
+            confirmedInputs);
+        var evaluation = BahrainLapAuditEvaluator.Evaluate(inventory, completed);
+        await BahrainLapAuditStore.CompleteAsync(
+                paths,
+                captureId,
+                completed,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return evaluation;
     }
 
     public static async Task<BahrainLapInventory> BuildInventoryAsync(

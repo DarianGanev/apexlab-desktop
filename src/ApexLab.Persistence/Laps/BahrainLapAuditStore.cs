@@ -60,15 +60,48 @@ public static class BahrainLapAuditStore
         Action<BahrainLapAuditStoreStage>? observer,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(captureId);
+        await PublishAsync(
+                paths,
+                document,
+                CreateLeafName(captureId),
+                CreateStagingLeafName(captureId),
+                observer,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    internal static Task CompleteAsync(
+        ApplicationPaths paths,
+        RawEvidenceCaptureId captureId,
+        BahrainLapAuditDocument document,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(captureId);
+        return PublishAsync(
+            paths,
+            document,
+            CreateCompletedLeafName(captureId),
+            CreateStagingLeafName(captureId),
+            observer: null,
+            cancellationToken);
+    }
+
+    private static async Task PublishAsync(
+        ApplicationPaths paths,
+        BahrainLapAuditDocument document,
+        string finalLeaf,
+        string stagingLeaf,
+        Action<BahrainLapAuditStoreStage>? observer,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(document);
         cancellationToken.ThrowIfCancellationRequested();
         var bytes = BahrainLapAuditJson.Serialize(document);
         WindowsLapAuditDirectory? directory = null;
         FileStream? stream = null;
         var deleteOwned = false;
-        string? finalLeaf = null;
         Exception? primary = null;
         try
         {
@@ -83,7 +116,6 @@ public static class BahrainLapAuditStore
                     exception);
             }
 
-            finalLeaf = CreateLeafName(captureId);
             FileStream? existing;
             try
             {
@@ -102,7 +134,6 @@ public static class BahrainLapAuditStore
                 throw Failure(BahrainLapAuditStoreFailureKind.AlreadyExists);
             }
 
-            var stagingLeaf = CreateStagingLeafName(captureId);
             try
             {
                 stream = directory.CreateNewFile(stagingLeaf);
@@ -120,6 +151,9 @@ public static class BahrainLapAuditStore
             observer?.Invoke(BahrainLapAuditStoreStage.FlushDocument);
             await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             stream.Flush(flushToDisk: true);
+            observer?.Invoke(BahrainLapAuditStoreStage.VerifyDocument);
+            await VerifyStagedAsync(stream, bytes, cancellationToken)
+                .ConfigureAwait(false);
             observer?.Invoke(BahrainLapAuditStoreStage.PublishDocument);
             cancellationToken.ThrowIfCancellationRequested();
             try
@@ -133,16 +167,9 @@ public static class BahrainLapAuditStore
                     exception);
             }
 
-            observer?.Invoke(BahrainLapAuditStoreStage.VerifyDocument);
+            deleteOwned = false;
             await stream.DisposeAsync().ConfigureAwait(false);
             stream = null;
-            await VerifyPublishedAsync(
-                    directory,
-                    finalLeaf,
-                    bytes,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            deleteOwned = false;
         }
         catch (Exception exception)
         {
@@ -173,7 +200,7 @@ public static class BahrainLapAuditStore
                 cleanupFailures.Add(exception);
             }
         }
-        else if (deleteOwned && directory is not null && finalLeaf is not null)
+        else if (deleteOwned && directory is not null)
         {
             try
             {
@@ -205,13 +232,57 @@ public static class BahrainLapAuditStore
         ThrowFailures(primary, cleanupFailures);
     }
 
-    public static async Task<BahrainLapAuditDocument> OpenAsync(
+    public static Task<BahrainLapAuditDocument> OpenAsync(
         ApplicationPaths paths,
         RawEvidenceCaptureId captureId,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(captureId);
+        return OpenByLeafAsync(
+            paths,
+            CreateLeafName(captureId),
+            cancellationToken);
+    }
+
+    public static Task<BahrainLapAuditDocument> OpenCompletedAsync(
+        ApplicationPaths paths,
+        RawEvidenceCaptureId captureId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(captureId);
+        return OpenByLeafAsync(
+            paths,
+            CreateCompletedLeafName(captureId),
+            cancellationToken);
+    }
+
+    public static async Task<BahrainLapAuditDocument> OpenForEvaluationAsync(
+        ApplicationPaths paths,
+        RawEvidenceCaptureId captureId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await OpenCompletedAsync(
+                    paths,
+                    captureId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (BahrainLapAuditStoreException exception)
+            when (exception.Kind == BahrainLapAuditStoreFailureKind.Missing)
+        {
+            return await OpenAsync(paths, captureId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<BahrainLapAuditDocument> OpenByLeafAsync(
+        ApplicationPaths paths,
+        string leafName,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
         cancellationToken.ThrowIfCancellationRequested();
         WindowsLapAuditDirectory? directory = null;
         FileStream? stream = null;
@@ -222,7 +293,7 @@ public static class BahrainLapAuditStore
             try
             {
                 directory = WindowsLapAuditDirectory.Open(paths);
-                stream = directory.TryOpenExistingReadOnly(CreateLeafName(captureId));
+                stream = directory.TryOpenExistingReadOnly(leafName);
             }
             catch (Exception exception) when (IsUnsafeStorageFailure(exception))
             {
@@ -294,23 +365,29 @@ public static class BahrainLapAuditStore
         return $"{captureId.Value}.bahrain-lap-audit.json";
     }
 
+    internal static string CreateCompletedLeafName(
+        RawEvidenceCaptureId captureId)
+    {
+        ArgumentNullException.ThrowIfNull(captureId);
+        return $"{captureId.Value}.bahrain-lap-audit.completed.json";
+    }
+
     private static string CreateStagingLeafName(RawEvidenceCaptureId captureId) =>
         $"{captureId.Value}.{Guid.NewGuid():N}.bahrain-lap-audit.json.partial";
 
-    private static async Task VerifyPublishedAsync(
-        WindowsLapAuditDirectory directory,
-        string finalLeaf,
+    private static async Task VerifyStagedAsync(
+        FileStream staging,
         byte[] expected,
         CancellationToken cancellationToken)
     {
-        await using var verification = directory.OpenExistingReadOnly(finalLeaf);
-        if (verification.Length != expected.Length)
+        staging.Position = 0;
+        if (staging.Length != expected.Length)
         {
             throw Failure(BahrainLapAuditStoreFailureKind.PublicationFailed);
         }
 
         var actual = new byte[expected.Length];
-        await verification.ReadExactlyAsync(actual, cancellationToken)
+        await staging.ReadExactlyAsync(actual, cancellationToken)
             .ConfigureAwait(false);
         if (!actual.AsSpan().SequenceEqual(expected))
         {

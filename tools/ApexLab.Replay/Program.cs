@@ -1,3 +1,4 @@
+using System.Text;
 using ApexLab.Replay.BahrainValidation;
 using ApexLab.Replay.CanonicalValidation;
 using ApexLab.Replay.LapAudit;
@@ -15,6 +16,25 @@ ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
 Console.CancelKeyPress += cancelHandler;
 try
 {
+    if (args.Length != 0 && args[0] == "complete-bahrain-lap-audit")
+    {
+        using var privateInput = new StreamReader(
+            Console.OpenStandardInput(),
+            new UTF8Encoding(
+                encoderShouldEmitUTF8Identifier: false,
+                throwOnInvalidBytes: true),
+            detectEncodingFromByteOrderMarks: false,
+            bufferSize: 1_024,
+            leaveOpen: true);
+        var completion = await BahrainLapAuditCompletionCommand.ExecuteAsync(
+            args,
+            privateInput,
+            Console.IsInputRedirected,
+            interruption.Token);
+        await Console.Out.WriteLineAsync(completion.Json);
+        return (int)completion.ExitCode;
+    }
+
     if (args.Length != 0 && args[0] == "validate-bahrain-lap-audit")
     {
         var validation = await BahrainLapAuditValidationCommand.ExecuteAsync(

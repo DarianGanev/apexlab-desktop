@@ -17,7 +17,7 @@ namespace ApexLab.IntegrationTests.Laps;
 public sealed class RawEvidenceBahrainLapAuditTests
 {
     [TestMethod]
-    public async Task ProductionReplayProducesDeterministicAuditsAndEnforcesFiveLapGate()
+    public async Task ProductionReplayProducesDeterministicCompletedAudits()
     {
         using var first = TemporaryRoot.Create("lap-audit-a");
         using var second = TemporaryRoot.Create("lap-audit-b");
@@ -57,12 +57,17 @@ public sealed class RawEvidenceBahrainLapAuditTests
             AuditBytes(first.Paths),
             AuditBytes(second.Paths));
 
-        await ReplaceAuditAsync(first.Paths, Complete(firstTemplate, 4));
-        await ReplaceAuditAsync(second.Paths, Complete(secondTemplate, 5));
-        var abstained = await RawEvidenceBahrainLapAudit.EvaluateAsync(
+        var firstCompleted = await RawEvidenceBahrainLapAudit.CompleteAllEligibleAsync(
             first.Paths,
             captureId,
             projector,
+            ConfirmedInputs(),
+            TestContext.CancellationToken);
+        var secondCompleted = await RawEvidenceBahrainLapAudit.CompleteAllEligibleAsync(
+            second.Paths,
+            captureId,
+            projector,
+            ConfirmedInputs(),
             TestContext.CancellationToken);
         var ready = await RawEvidenceBahrainLapAudit.EvaluateAsync(
             second.Paths,
@@ -70,15 +75,16 @@ public sealed class RawEvidenceBahrainLapAuditTests
             projector,
             TestContext.CancellationToken);
 
-        Assert.AreEqual(BaselineDisposition.Abstained, abstained.Selection?.Disposition);
-        CollectionAssert.Contains(
-            abstained.AbstentionReasons.ToArray(),
-            BaselineAbstentionReason.InsufficientComparableLaps);
         Assert.AreEqual(BaselineDisposition.Ready, ready.Selection?.Disposition);
+        Assert.AreEqual(BaselineDisposition.Ready, firstCompleted.Selection?.Disposition);
+        Assert.AreEqual(BaselineDisposition.Ready, secondCompleted.Selection?.Disposition);
         Assert.AreEqual(5, ready.IncludedCount);
         Assert.AreEqual(2, ready.ExcludedCount);
         Assert.IsTrue(ready.AllCandidatesAudited);
         Assert.IsTrue(ready.IncludedContextsMatch);
+        CollectionAssert.AreEqual(
+            CompletedAuditBytes(first.Paths, captureId),
+            CompletedAuditBytes(second.Paths, captureId));
 
         DeleteAllEvidence(first.Paths);
         DeleteAllEvidence(second.Paths);
@@ -105,7 +111,10 @@ public sealed class RawEvidenceBahrainLapAuditTests
             template.ReferenceContext,
             template.ManualInputs,
             template.Entries);
-        await ReplaceAuditAsync(temporary.Paths, stale);
+        await File.WriteAllBytesAsync(
+            CompletedAuditPath(temporary.Paths, captureId),
+            BahrainLapAuditJson.Serialize(stale),
+            TestContext.CancellationToken);
 
         var mismatch = await Assert.ThrowsExactlyAsync<BahrainLapAuditException>(() =>
             RawEvidenceBahrainLapAudit.EvaluateAsync(
@@ -126,7 +135,7 @@ public sealed class RawEvidenceBahrainLapAuditTests
                 canceled.Token));
 
         await File.WriteAllTextAsync(
-            AuditPath(temporary.Paths),
+            CompletedAuditPath(temporary.Paths, captureId),
             "{}\n",
             TestContext.CancellationToken);
         var corrupt = await Assert.ThrowsExactlyAsync<BahrainLapAuditStoreException>(() =>
@@ -140,58 +149,62 @@ public sealed class RawEvidenceBahrainLapAuditTests
         DeleteAllEvidence(temporary.Paths);
     }
 
+    [TestMethod]
+    public async Task UnderMinimumCompletionIsPersistedAndTruthfullyAbstains()
+    {
+        using var temporary = TemporaryRoot.Create("lap-audit-under-minimum");
+        var captureId = RawEvidenceCaptureId.Parse(
+            "4123456789ab4def8123456789abcdef");
+        await CreateEvidenceAsync(
+            temporary.Paths,
+            captureId,
+            lapObservationCount: 6);
+        var projector = new F125BahrainCanonicalProjector();
+        await RawEvidenceBahrainLapAudit.PrepareAsync(
+            temporary.Paths,
+            captureId,
+            projector,
+            TestContext.CancellationToken);
+
+        var completed = await RawEvidenceBahrainLapAudit.CompleteAllEligibleAsync(
+            temporary.Paths,
+            captureId,
+            projector,
+            ConfirmedInputs(),
+            TestContext.CancellationToken);
+        var reopened = await BahrainLapAuditStore.OpenCompletedAsync(
+            temporary.Paths,
+            captureId,
+            TestContext.CancellationToken);
+
+        Assert.AreEqual(4, completed.IncludedCount);
+        Assert.AreEqual(2, completed.ExcludedCount);
+        Assert.IsTrue(completed.AllCandidatesAudited);
+        Assert.AreEqual(
+            BaselineDisposition.Abstained,
+            completed.Selection?.Disposition);
+        Assert.IsTrue(reopened.Entries.All(entry => entry.Decision.HasValue));
+        DeleteAllEvidence(temporary.Paths);
+    }
+
     public TestContext TestContext { get; set; } = null!;
 
-    internal static BahrainLapAuditDocument Complete(
-        BahrainLapAuditDocument template,
-        int includedCompleteCount)
-    {
-        var included = 0;
-        var entries = template.Entries.Select(entry =>
-        {
-            if (entry.Boundary.Completeness != LapBoundaryCompleteness.Complete)
-            {
-                return entry with
-                {
-                    Decision = LapAuditDecision.Excluded,
-                    ExclusionReason = LapExclusionReason.IncompleteLap,
-                };
-            }
-
-            if (included++ < includedCompleteCount)
-            {
-                return entry with { Decision = LapAuditDecision.Included };
-            }
-
-            return entry with
-            {
-                Decision = LapAuditDecision.Excluded,
-                ExclusionReason = LapExclusionReason.OtherFactual,
-                FactualNote = "Visually observed steering interruption.",
-            };
-        });
-        return new(
-            template.SchemaVersion,
-            template.LapAuditId,
-            template.CanonicalIdentitySha256,
-            template.CanonicalSha256,
-            template.ReferenceContext,
-            new BahrainLapAuditManualInputs(
-                "F1 25 current PC build",
-                "Ferrari",
-                "Wheel and pedals",
-                "Unchanged baseline setup",
-                "Soft",
-                true,
-                true,
-                true,
-                true),
-            entries);
-    }
+    internal static BahrainLapAuditManualInputs ConfirmedInputs() =>
+        new(
+            "synthetic-game-build",
+            "synthetic-player-vehicle",
+            "synthetic-controller-profile",
+            "synthetic-setup-descriptor",
+            "synthetic-tyre-compound",
+            true,
+            true,
+            true,
+            true);
 
     internal static async Task CreateEvidenceAsync(
         ApplicationPaths paths,
-        RawEvidenceCaptureId captureId)
+        RawEvidenceCaptureId captureId,
+        int lapObservationCount = 7)
     {
         await using var writer = await RawEvidenceWriter.CreateAsync(
             paths,
@@ -200,7 +213,7 @@ public sealed class RawEvidenceBahrainLapAuditTests
             new RawEvidenceLimits(minimumFreeSpaceBytes: 0));
         var receivedAt = new DateTimeOffset(2026, 8, 9, 12, 0, 0, TimeSpan.Zero);
         var packets = new List<byte[]> { Session() };
-        packets.AddRange(Enumerable.Range(1, 7).Select(lapNumber =>
+        packets.AddRange(Enumerable.Range(1, lapObservationCount).Select(lapNumber =>
             Lap((byte)lapNumber, lapNumber == 1 ? 0U : (uint)(89_000 + lapNumber))));
         for (var index = 0; index < packets.Count; index++)
         {
@@ -293,18 +306,22 @@ public sealed class RawEvidenceBahrainLapAuditTests
         }
     }
 
-    internal static async Task ReplaceAuditAsync(
-        ApplicationPaths paths,
-        BahrainLapAuditDocument document) =>
-        await File.WriteAllBytesAsync(
-            AuditPath(paths),
-            BahrainLapAuditJson.Serialize(document));
-
     private static byte[] AuditBytes(ApplicationPaths paths) =>
-        File.ReadAllBytes(AuditPath(paths));
+        File.ReadAllBytes(Directory.GetFiles(
+            paths.LapAuditsDirectory,
+            "*.bahrain-lap-audit.json").Single());
 
-    private static string AuditPath(ApplicationPaths paths) =>
-        Directory.GetFiles(paths.LapAuditsDirectory).Single();
+    private static byte[] CompletedAuditBytes(
+        ApplicationPaths paths,
+        RawEvidenceCaptureId captureId) =>
+        File.ReadAllBytes(CompletedAuditPath(paths, captureId));
+
+    private static string CompletedAuditPath(
+        ApplicationPaths paths,
+        RawEvidenceCaptureId captureId) =>
+        Path.Combine(
+            paths.LapAuditsDirectory,
+            $"{captureId.Value}.bahrain-lap-audit.completed.json");
 
     internal static void DeleteAllEvidence(ApplicationPaths paths)
     {

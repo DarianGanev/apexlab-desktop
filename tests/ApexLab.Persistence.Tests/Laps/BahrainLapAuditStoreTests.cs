@@ -77,6 +77,109 @@ public sealed class BahrainLapAuditStoreTests
     }
 
     [TestMethod]
+    public async Task CompletionPublishesASeparateImmutableDocument()
+    {
+        using var temporary = TemporaryRoot.Create();
+        var captureId = CaptureId();
+        var template = BahrainLapAuditTestData.Document();
+        var completed = BahrainLapAuditTestData.Document(LapAuditDecision.Included);
+        await BahrainLapAuditStore.PrepareAsync(
+            temporary.Paths,
+            captureId,
+            template,
+            observer: null,
+            TestContext.CancellationToken);
+        var templatePath = Path.Combine(
+            temporary.Paths.LapAuditsDirectory,
+            BahrainLapAuditStore.CreateLeafName(captureId));
+        var templateBytes = await File.ReadAllBytesAsync(
+            templatePath,
+            TestContext.CancellationToken);
+
+        await BahrainLapAuditStore.CompleteAsync(
+            temporary.Paths,
+            captureId,
+            completed,
+            TestContext.CancellationToken);
+        var reopened = await BahrainLapAuditStore.OpenCompletedAsync(
+            temporary.Paths,
+            captureId,
+            TestContext.CancellationToken);
+        var duplicate = await Assert.ThrowsExactlyAsync<BahrainLapAuditStoreException>(() =>
+            BahrainLapAuditStore.CompleteAsync(
+                temporary.Paths,
+                captureId,
+                completed,
+                TestContext.CancellationToken));
+
+        CollectionAssert.AreEqual(
+            BahrainLapAuditJson.Serialize(completed),
+            BahrainLapAuditJson.Serialize(reopened));
+        Assert.AreEqual(BahrainLapAuditStoreFailureKind.AlreadyExists, duplicate.Kind);
+        Assert.HasCount(2, Directory.GetFiles(temporary.Paths.LapAuditsDirectory));
+        CollectionAssert.AreEqual(
+            templateBytes,
+            await File.ReadAllBytesAsync(
+                templatePath,
+                TestContext.CancellationToken));
+        Assert.IsEmpty(Directory.GetFiles(
+            temporary.Paths.LapAuditsDirectory,
+            "*.partial"));
+    }
+
+    [TestMethod]
+    public async Task EvaluationFallsBackOnlyWhenCompletedDocumentIsMissing()
+    {
+        using var temporary = TemporaryRoot.Create();
+        var captureId = CaptureId();
+        var template = BahrainLapAuditTestData.Document();
+        var completed = BahrainLapAuditTestData.Document(LapAuditDecision.Included);
+        await BahrainLapAuditStore.PrepareAsync(
+            temporary.Paths,
+            captureId,
+            template,
+            observer: null,
+            TestContext.CancellationToken);
+
+        var pending = await BahrainLapAuditStore.OpenForEvaluationAsync(
+            temporary.Paths,
+            captureId,
+            TestContext.CancellationToken);
+        CollectionAssert.AreEqual(
+            BahrainLapAuditJson.Serialize(template),
+            BahrainLapAuditJson.Serialize(pending));
+
+        await BahrainLapAuditStore.CompleteAsync(
+            temporary.Paths,
+            captureId,
+            completed,
+            TestContext.CancellationToken);
+        var selected = await BahrainLapAuditStore.OpenForEvaluationAsync(
+            temporary.Paths,
+            captureId,
+            TestContext.CancellationToken);
+        CollectionAssert.AreEqual(
+            BahrainLapAuditJson.Serialize(completed),
+            BahrainLapAuditJson.Serialize(selected));
+
+        var completedPath = Path.Combine(
+            temporary.Paths.LapAuditsDirectory,
+            BahrainLapAuditStore.CreateCompletedLeafName(captureId));
+        await File.WriteAllTextAsync(
+            completedPath,
+            "{}\n",
+            TestContext.CancellationToken);
+        var malformed = await Assert.ThrowsExactlyAsync<BahrainLapAuditStoreException>(() =>
+            BahrainLapAuditStore.OpenForEvaluationAsync(
+                temporary.Paths,
+                captureId,
+                TestContext.CancellationToken));
+        Assert.AreEqual(
+            BahrainLapAuditStoreFailureKind.InvalidDocument,
+            malformed.Kind);
+    }
+
+    [TestMethod]
     public async Task FaultAndCancellationDeleteOnlyOwnedStagingFile()
     {
         foreach (var stage in Enum.GetValues<BahrainLapAuditStoreStage>())

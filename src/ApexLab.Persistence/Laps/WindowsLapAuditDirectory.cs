@@ -73,6 +73,8 @@ internal sealed class WindowsLapAuditDirectory : IDisposable
         var valid = parts switch
         {
             [var capture, "bahrain-lap-audit", "json"] => IsCaptureId(capture),
+            [var capture, "bahrain-lap-audit", "completed", "json"] =>
+                IsCaptureId(capture),
             [var capture, var staging, "bahrain-lap-audit", "json", "partial"] =>
                 IsCaptureId(capture) && IsStagingId(staging),
             _ => false,

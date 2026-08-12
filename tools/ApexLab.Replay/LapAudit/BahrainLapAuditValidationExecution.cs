@@ -63,7 +63,7 @@ internal static class BahrainLapAuditValidationExecution
                     projector,
                     cancellationToken)
                 .ConfigureAwait(false);
-            var audit = await BahrainLapAuditStore.OpenAsync(
+            var audit = await BahrainLapAuditStore.OpenForEvaluationAsync(
                     evidencePaths,
                     captureId,
                     cancellationToken)

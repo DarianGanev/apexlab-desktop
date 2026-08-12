@@ -21,14 +21,17 @@ public sealed class BahrainLapAuditValidationExecutionTests
         await RawEvidenceBahrainLapAuditTests.CreateEvidenceAsync(
             evidence.Paths,
             captureId);
-        var template = await RawEvidenceBahrainLapAudit.PrepareAsync(
+        await RawEvidenceBahrainLapAudit.PrepareAsync(
             evidence.Paths,
             captureId,
             new F125BahrainCanonicalProjector(),
             TestContext.CancellationToken);
-        await RawEvidenceBahrainLapAuditTests.ReplaceAuditAsync(
+        await RawEvidenceBahrainLapAudit.CompleteAllEligibleAsync(
             evidence.Paths,
-            RawEvidenceBahrainLapAuditTests.Complete(template, 5));
+            captureId,
+            new F125BahrainCanonicalProjector(),
+            RawEvidenceBahrainLapAuditTests.ConfirmedInputs(),
+            TestContext.CancellationToken);
         var roots = new Queue<ApplicationPaths>(
         [
             TemporaryCachePaths(),

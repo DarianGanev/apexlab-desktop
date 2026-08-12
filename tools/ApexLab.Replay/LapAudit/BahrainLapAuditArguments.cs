@@ -54,7 +54,7 @@ internal sealed record BahrainLapAuditArguments(
         return true;
     }
 
-    private static bool TryNormalizeRoot(
+    internal static bool TryNormalizeRoot(
         string value,
         [NotNullWhen(true)] out string? normalized)
     {
