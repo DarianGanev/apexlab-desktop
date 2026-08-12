@@ -10,7 +10,6 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$expectedSdkVersion = "10.0.302"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $artifactRoot = Join-Path $repositoryRoot "artifacts"
 $testResultsDirectory = Join-Path $artifactRoot "test-results"
@@ -46,6 +45,62 @@ function Get-TextLines {
 
     $lines = [IO.File]::ReadAllLines($Path)
     return ,$lines
+}
+
+function Assert-CompatibleDotNetSdk {
+    param(
+        [Parameter(Mandatory)][string] $GlobalJsonPath,
+        [Parameter(Mandatory)][string] $ActualVersion)
+
+    try {
+        $policy = Get-Content -Raw -LiteralPath $GlobalJsonPath |
+            ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "global.json contains an invalid SDK policy."
+    }
+
+    $versionPattern = '^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$'
+    if ($null -eq $policy.sdk `
+        -or [string]$policy.sdk.rollForward -cne 'latestPatch' `
+        -or [string]$policy.sdk.version -notmatch $versionPattern) {
+        throw "global.json must declare a stable latestPatch SDK policy."
+    }
+
+    $minimumMatch = [regex]::Match(
+        [string]$policy.sdk.version,
+        $versionPattern)
+    $actualMatch = [regex]::Match($ActualVersion, $versionPattern)
+    if (!$actualMatch.Success) {
+        throw "Expected a compatible .NET SDK but found '$ActualVersion'."
+    }
+
+    try {
+        $minimumMajor = [int]::Parse($minimumMatch.Groups['major'].Value)
+        $minimumMinor = [int]::Parse($minimumMatch.Groups['minor'].Value)
+        $minimumPatch = [int]::Parse($minimumMatch.Groups['patch'].Value)
+        $actualMajor = [int]::Parse($actualMatch.Groups['major'].Value)
+        $actualMinor = [int]::Parse($actualMatch.Groups['minor'].Value)
+        $actualPatch = [int]::Parse($actualMatch.Groups['patch'].Value)
+    }
+    catch [OverflowException] {
+        throw "global.json contains an invalid SDK policy."
+    }
+
+    $minimumFeatureBand = [math]::Floor($minimumPatch / 100)
+    $actualFeatureBand = [math]::Floor($actualPatch / 100)
+    if ($actualMajor -ne $minimumMajor `
+        -or $actualMinor -ne $minimumMinor `
+        -or $actualFeatureBand -ne $minimumFeatureBand `
+        -or $actualPatch -lt $minimumPatch) {
+        throw (
+            "Expected a compatible .NET SDK at or above {0} in feature band {1}.{2}.{3}xx, but found {4}." -f `
+                $policy.sdk.version,
+                $minimumMajor,
+                $minimumMinor,
+                $minimumFeatureBand,
+                $ActualVersion)
+    }
 }
 
 function Assert-NoConflictMarkers {
@@ -281,6 +336,33 @@ function Test-RepositoryCheckFailurePaths {
     $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ("apexlab-verify-checks-" + [Guid]::NewGuid().ToString("N"))
     [IO.Directory]::CreateDirectory($fixtureRoot) | Out-Null
     try {
+        $sdkPolicyPath = Join-Path $fixtureRoot "global.json"
+        [IO.File]::WriteAllText(
+            $sdkPolicyPath,
+            '{"sdk":{"version":"10.0.302","rollForward":"latestPatch"}}')
+        Assert-CompatibleDotNetSdk `
+            -GlobalJsonPath $sdkPolicyPath `
+            -ActualVersion "10.0.302"
+        Assert-CompatibleDotNetSdk `
+            -GlobalJsonPath $sdkPolicyPath `
+            -ActualVersion "10.0.303"
+        Assert-CheckRejects `
+            -Name "SDK patch below minimum" `
+            -ExpectedMessagePattern '^Expected a compatible .NET SDK' `
+            -Check {
+            Assert-CompatibleDotNetSdk `
+                -GlobalJsonPath $sdkPolicyPath `
+                -ActualVersion "10.0.301"
+        }
+        Assert-CheckRejects `
+            -Name "SDK feature-band drift" `
+            -ExpectedMessagePattern '^Expected a compatible .NET SDK' `
+            -Check {
+            Assert-CompatibleDotNetSdk `
+                -GlobalJsonPath $sdkPolicyPath `
+                -ActualVersion "10.0.400"
+        }
+
         [IO.File]::WriteAllText((Join-Path $fixtureRoot "conflict.txt"), ("<" * 7) + " HEAD")
         Assert-NoGeneratedChanges -Before @() -After @()
         Assert-CheckRejects `
@@ -431,9 +513,9 @@ try {
 
     $actualSdkVersion = (& $DotNetPath --version).Trim()
     if ($LASTEXITCODE -ne 0) { throw "dotnet --version failed with exit code $LASTEXITCODE." }
-    if ($actualSdkVersion -ne $expectedSdkVersion) {
-        throw "Expected .NET SDK $expectedSdkVersion but found $actualSdkVersion."
-    }
+    Assert-CompatibleDotNetSdk `
+        -GlobalJsonPath (Join-Path $repositoryRoot 'global.json') `
+        -ActualVersion $actualSdkVersion
 
     Assert-SafeArtifactPath -Path $testResultsDirectory
     if ([IO.Directory]::Exists($testResultsDirectory)) {
