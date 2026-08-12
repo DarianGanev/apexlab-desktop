@@ -44,14 +44,15 @@ There is no mobile/web client, backend, account system, smartwatch, IoT device, 
 
 ## Build and verification
 
-Prerequisites are Windows 11 x64, PowerShell 5.1 or newer, and the .NET SDK version pinned in
-`global.json` (currently 10.0.302). Restore remains locked to committed NuGet graphs.
+Prerequisites are Windows 11 x64, PowerShell 5.1 or newer, and an SDK accepted by the policy in
+`global.json` (currently 10.0.302 or a later patch in the 10.0.3xx feature band). Restore remains
+locked to committed NuGet graphs.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Verify.ps1
 ```
 
-Verification performs the SDK pin check, locked restore, formatting check, warnings-as-errors
+Verification performs the SDK policy check, locked restore, formatting check, warnings-as-errors
 Release build, non-soak tests, TRX/Cobertura output, and repository hygiene checks. Generated test
 evidence is written below ignored `artifacts/test-results`.
 

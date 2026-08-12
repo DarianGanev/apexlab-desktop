@@ -1,7 +1,10 @@
 using System.Text.Json;
 using ApexLab.Application.Canonical;
+using ApexLab.Application.Laps;
+using ApexLab.Domain.Laps;
 using ApexLab.Protocols.F125.Canonical;
 using ApexLab.Protocols.F125.Decoding;
+using ApexLab.Replay.LapAudit;
 using ApexLab.Telemetry.Abstractions.Canonical;
 using ApexLab.Telemetry.Abstractions.Protocol;
 
@@ -514,6 +517,114 @@ public sealed class BahrainSliceContractTests
             ("Lap", typeof(CanonicalLapPacket?)),
             ("Event", typeof(CanonicalEventPacket?)),
             ("CarTelemetry", typeof(CanonicalCarTelemetryPacket?)));
+    }
+
+    [TestMethod]
+    public void Production_lap_audit_surface_matches_the_frozen_contract()
+    {
+        using var document = LoadJson("contracts/v0.3/bahrain-slice-v1.json");
+        var root = document.RootElement;
+        var versions = root.GetProperty("versionIds");
+        var supported = root.GetProperty("supportedContext");
+
+        Assert.AreEqual(
+            BahrainLapAuditContract.AuditId,
+            versions.GetProperty("lapAuditId").GetString());
+        Assert.AreEqual(
+            5,
+            typeof(BahrainLapAuditContract)
+                .GetField(nameof(BahrainLapAuditContract.MinimumComparableBaselineLaps))!
+                .GetRawConstantValue());
+        CollectionAssert.AreEqual(
+            new[] { LapAuditDecision.Included, LapAuditDecision.Excluded },
+            Enum.GetValues<LapAuditDecision>());
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                LapExclusionReason.Invalidated,
+                LapExclusionReason.PitEntryOrExit,
+                LapExclusionReason.FlashbackObserved,
+                LapExclusionReason.MaterialGap,
+                LapExclusionReason.ContextMismatch,
+                LapExclusionReason.IncompleteLap,
+                LapExclusionReason.OtherFactual,
+            },
+            Enum.GetValues<LapExclusionReason>());
+
+        AssertProperties<BahrainLapAuditManualInputs>(
+            ("GameBuild", typeof(string)),
+            ("PlayerVehicle", typeof(string)),
+            ("ControllerProfile", typeof(string)),
+            ("SetupDescriptor", typeof(string)),
+            ("TyreCompound", typeof(string)),
+            ("EvidenceIntegrityPassed", typeof(bool?)),
+            ("TrackAndModeVisuallyConfirmed", typeof(bool?)),
+            ("SetupUnchanged", typeof(bool?)),
+            ("ContextCrossCheckPassed", typeof(bool?)),
+            ("IsComplete", typeof(bool)));
+        AssertProperties<LapBoundary>(
+            ("Completeness", typeof(LapBoundaryCompleteness)),
+            ("StartSourceSequence", typeof(long)),
+            ("EndSourceSequenceExclusive", typeof(long)),
+            ("CompletionEvidenceSourceSequence", typeof(long?)),
+            ("LapNumber", typeof(byte?)),
+            ("OfficialLapTimeMilliseconds", typeof(uint?)));
+        AssertProperties<BahrainLapAuditValidationReport>(
+            ("SchemaVersion", typeof(int)),
+            ("SchemaId", typeof(string)),
+            ("Status", typeof(string)),
+            ("LapAuditId", typeof(string)),
+            ("IncludedCount", typeof(int)),
+            ("ExcludedCount", typeof(int)),
+            ("PendingCount", typeof(int)),
+            ("MinimumRequiredCount", typeof(int)),
+            ("AllCandidatesAudited", typeof(bool)),
+            ("IncludedContextsMatch", typeof(bool)),
+            ("ProvenanceComplete", typeof(bool)),
+            ("DeterministicSelection", typeof(bool)),
+            ("PrivateDataExcluded", typeof(bool)),
+            ("Conclusion", typeof(string)));
+        AssertProperties<BahrainLapAuditPrepareSuccessReport>(
+            ("SchemaVersion", typeof(int)),
+            ("SchemaId", typeof(string)),
+            ("Status", typeof(string)),
+            ("LapAuditId", typeof(string)),
+            ("CandidateCount", typeof(int)),
+            ("PrivateDataExcluded", typeof(bool)),
+            ("NextAction", typeof(string)));
+
+        var context = new BahrainTelemetryContext(
+            new CanonicalSessionPacket(
+                weather: 0,
+                trackTemperatureCelsius: 30,
+                airTemperatureCelsius: 20,
+                trackLengthMetres: 5_412,
+                sessionType: checked((byte)supported.GetProperty("sessionType").GetInt32()),
+                trackId: checked((sbyte)supported.GetProperty("trackId").GetInt32()),
+                formula: 0,
+                isSpectating: false,
+                isNetworkGame: false,
+                steeringAssist: 0,
+                brakingAssist: 0,
+                gearboxAssist: 1,
+                pitAssist: 0,
+                pitReleaseAssist: 0,
+                ersAssist: 0,
+                drsAssist: 0,
+                dynamicRacingLine: 0,
+                dynamicRacingLineType: 0,
+                gameMode: checked((byte)supported.GetProperty("gameMode").GetInt32()),
+                ruleSet: checked((byte)supported.GetProperty("ruleSet").GetInt32()),
+                timeOfDayMinutesSinceMidnight: 720,
+                equalCarPerformance: true,
+                recoveryMode: 0),
+            playerCarIndex: checked((byte)supported.GetProperty("minimumPlayerCarIndex").GetInt32()),
+            secondaryPlayerCarIndex: checked((byte)supported.GetProperty("secondaryPlayerCarIndex").GetInt32()));
+        Assert.IsTrue(context.IsSupported);
+        Assert.AreEqual(3, context.TrackId);
+        Assert.AreEqual(5, context.GameMode);
+        Assert.AreEqual(18, context.SessionType);
+        Assert.AreEqual(2, context.RuleSet);
     }
 
     private static void AssertAttachment(JsonElement attachment, string name, int bytes, string sha256)

@@ -10,6 +10,7 @@ public sealed record ApplicationPaths
         DatabaseFile = Path.Combine(rootDirectory, "apexlab.db");
         RawCapturesDirectory = Path.Combine(rootDirectory, "captures");
         DerivedCacheDirectory = Path.Combine(rootDirectory, "cache");
+        LapAuditsDirectory = Path.Combine(rootDirectory, "lap-audits");
         LogsDirectory = Path.Combine(rootDirectory, "logs");
         BackupsDirectory = Path.Combine(rootDirectory, "backups");
         ImportStagingDirectory = Path.Combine(rootDirectory, "import-staging");
@@ -22,6 +23,8 @@ public sealed record ApplicationPaths
     public string RawCapturesDirectory { get; }
 
     public string DerivedCacheDirectory { get; }
+
+    public string LapAuditsDirectory { get; }
 
     public string LogsDirectory { get; }
 

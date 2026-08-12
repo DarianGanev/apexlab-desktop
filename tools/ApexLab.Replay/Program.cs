@@ -1,5 +1,7 @@
+using System.Text;
 using ApexLab.Replay.BahrainValidation;
 using ApexLab.Replay.CanonicalValidation;
+using ApexLab.Replay.LapAudit;
 using ApexLab.Replay.Probe;
 using ApexLab.Replay.Replay;
 using ApexLab.Replay.Validation;
@@ -14,6 +16,43 @@ ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
 Console.CancelKeyPress += cancelHandler;
 try
 {
+    if (args.Length != 0 && args[0] == "complete-bahrain-lap-audit")
+    {
+        using var privateInput = new StreamReader(
+            Console.OpenStandardInput(),
+            new UTF8Encoding(
+                encoderShouldEmitUTF8Identifier: false,
+                throwOnInvalidBytes: true),
+            detectEncodingFromByteOrderMarks: false,
+            bufferSize: 1_024,
+            leaveOpen: true);
+        var completion = await BahrainLapAuditCompletionCommand.ExecuteAsync(
+            args,
+            privateInput,
+            Console.IsInputRedirected,
+            interruption.Token);
+        await Console.Out.WriteLineAsync(completion.Json);
+        return (int)completion.ExitCode;
+    }
+
+    if (args.Length != 0 && args[0] == "validate-bahrain-lap-audit")
+    {
+        var validation = await BahrainLapAuditValidationCommand.ExecuteAsync(
+            args,
+            interruption.Token);
+        await Console.Out.WriteLineAsync(validation.Json);
+        return (int)validation.ExitCode;
+    }
+
+    if (args.Length != 0 && args[0] == "prepare-bahrain-lap-audit")
+    {
+        var preparation = await BahrainLapAuditPrepareCommand.ExecuteAsync(
+            args,
+            interruption.Token);
+        await Console.Out.WriteLineAsync(preparation.Json);
+        return (int)preparation.ExitCode;
+    }
+
     if (args.Length != 0 && args[0] == "validate-canonical-replay")
     {
         var validation = await CanonicalReplayValidationCommand.ExecuteAsync(
